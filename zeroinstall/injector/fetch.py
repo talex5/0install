@@ -321,11 +321,19 @@ class Fetcher(object):
 
 		return download_and_add_icon()
 
-	def download_impls(self, implementations, stores):
-		"""Download the given implementations, choosing a suitable retrieval method for each."""
+	def download_impls(self, implementations, stores, to_download = None):
+		"""Download the given implementations, choosing a suitable retrieval method for each.
+		@param to_download: preferred methods, if any
+		@type to_download: {L{Implementation}: L{RetrievalMethod}}"""
+		if not implementations: return None
+
 		blockers = []
 
-		to_download = []
+		if to_download is None:
+			to_download = {}
+		else:
+			to_download = to_download.copy()
+
 		for impl in implementations:
 			debug("start_downloading_impls: for %s get %s", impl.feed, impl)
 			source = self.get_best_source(impl)
@@ -334,9 +342,9 @@ class Fetcher(object):
 					"interface " + impl.feed.get_name() + " cannot be "
 					"downloaded (no download locations given in "
 					"interface!)")
-			to_download.append((impl, source))
+			to_download[impl] = source
 
-		for impl, source in to_download:
+		for impl, source in to_download.items():
 			blockers.append(self.download_impl(impl, source, stores))
 
 		if not blockers:
