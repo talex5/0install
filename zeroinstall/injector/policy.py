@@ -328,6 +328,10 @@ class Policy(object):
 		if self.src:
 			host_arch = arch.SourceArchitecture(host_arch)
 
+		if force and self.p2p_status:
+			self.p2p_status = {}
+			self.handler.downloads_changed()
+
 		while True:
 			self.solver.solve(self.root, host_arch)
 			for w in self.watchers: w()
@@ -464,6 +468,7 @@ class Policy(object):
 					if d in self.p2p_status:
 						info("Peer %s has %s", addr, d)
 						self.p2p_status[d].add(addr)
+						self.handler.downloads_changed()
 					else:
 						info("Unexpected offer of %s from %s", d, addr)
 			else:

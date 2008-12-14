@@ -15,6 +15,9 @@ def get_fetch_info(policy, impl):
 		else:
 			return '(cached)'
 	else:
+		peer = policy.choose_best_peer(impl)
+		if peer:
+			return "(p2p)"
 		src = policy.fetcher.get_best_source(impl)
 		if src:
 			return support.pretty_size(src.size)

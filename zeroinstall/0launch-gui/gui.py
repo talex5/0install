@@ -28,7 +28,6 @@ class GUIHandler(handler.Handler):
 			def pulse():
 				self.mainwindow.update_download_status()
 				return True
-			pulse()
 			self.pulse = gobject.timeout_add(200, pulse)
 		elif len(self.monitored_downloads) == 0:
 			# Delay before resetting, in case we start a new download quickly
@@ -38,7 +37,7 @@ class GUIHandler(handler.Handler):
 			if self.pulse:
 				gobject.source_remove(self.pulse)
 				self.pulse = None
-				self.mainwindow.update_download_status()
+		self.mainwindow.update_download_status()
 	
 	def impl_added_to_store(self, impl):
 		self.mainwindow.update_download_status()

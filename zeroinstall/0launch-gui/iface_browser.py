@@ -59,6 +59,12 @@ class InterfaceTips(TreeTips):
 		if self.mainwindow.policy.get_cached(impl):
 			return _("This version is already stored on your computer.")
 		else:
+			peer = self.mainwindow.policy.choose_best_peer(impl)
+			if peer:
+				import urlparse
+				addr = urlparse.urlparse(peer.url)[1].split(':')[0]
+				return _("Local machine %s can give us a copy") % addr
+
 			src = self.mainwindow.policy.fetcher.get_best_source(impl)
 			if not src:
 				return _("No downloads available!")
