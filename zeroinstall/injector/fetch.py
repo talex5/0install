@@ -278,7 +278,8 @@ class Fetcher(object):
 			raise SafeException("No 'type' attribute on archive, and I can't guess from the name (%s)" % download_source.url)
 		unpack.check_type_ok(mime_type)
 		dl = self.handler.get_download(download_source.url, force = force, hint = impl_hint)
-		dl.expected_size = download_source.size + (download_source.start_offset or 0)
+		if download_source.size is not None:
+			dl.expected_size = download_source.size + (download_source.start_offset or 0)
 		return (dl.downloaded, dl.tempfile)
 
 	def download_icon(self, interface, force = False):
@@ -336,6 +337,7 @@ class Fetcher(object):
 
 		for impl in implementations:
 			debug("start_downloading_impls: for %s get %s", impl.feed, impl)
+			if impl in to_download: continue
 			source = self.get_best_source(impl)
 			if not source:
 				raise SafeException("Implementation " + impl.id + " of "

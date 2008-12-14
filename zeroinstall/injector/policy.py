@@ -14,7 +14,7 @@ import ConfigParser
 
 from zeroinstall import SafeException
 from zeroinstall.injector import arch
-from zeroinstall.injector.model import Interface, Implementation, network_levels, network_offline, DistributionImplementation, network_full
+from zeroinstall.injector.model import Interface, Implementation, network_levels, network_offline, DistributionImplementation, network_full, DownloadSource
 from zeroinstall.injector.namespaces import config_site, config_prog, injector_gui_uri
 from zeroinstall.support import tasks, basedir
 from zeroinstall.injector.iface_cache import iface_cache
@@ -381,12 +381,34 @@ class Policy(object):
 			return True
 
 		return False
+
+	def choose_best_peer(self, impl):
+		"""Return the best peer on the local network which has impl.
+		@return: a suitable RetrievalMethod, or None"""
+		peers = self.p2p_status.get(impl.id, None)
+		if not peers: return None
+
+		url = 'http://%s:38339/implementation/%s' % (list(peers)[0], impl.id)
+		return DownloadSource(impl, url, size = None, extract = None,
+					type = 'application/x-compressed-tar')
 	
 	def download_uncached_implementations(self):
 		"""Download all implementations chosen by the solver that are missing from the cache."""
 		assert self.solver.ready, "Solver is not ready!\n%s" % self.solver.selections
-		return self.fetcher.download_impls([impl for impl in self.solver.selections.values() if not self.get_cached(impl)],
-						   iface_cache.stores)
+
+		not_cached = [impl for impl in self.solver.selections.values()
+					if not self.get_cached(impl)]
+
+		# Check whether we know that some local peers have the files
+		to_download = {}
+		for x in not_cached:
+			method = self.choose_best_peer(x)
+			if method:
+				to_download[x] = method
+
+		return self.fetcher.download_impls(not_cached,
+			   iface_cache.stores,
+			   to_download = to_download)
 
 	def download_icon(self, interface, force = False):
 		"""Download an icon for this interface and add it to the
@@ -423,5 +445,26 @@ class Policy(object):
 			import socket
 			self.p2p_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, 0)
 			self.p2p_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-		info("Broadcasting query on local network: %s", query)
+
+			self._p2p_collection()
+		info("Broadcasting query on local network: %s", repr(query))
 		self.p2p_socket.sendto(query, ('<broadcast>', 38339))
+
+	@tasks.named_async("collect P2P replies")
+	def _p2p_collection(self):
+		"""Wait for replies to P2P queries."""
+		while True:
+			yield tasks.InputBlocker(self.p2p_socket, "P2P socket")
+			data, addr = self.p2p_socket.recvfrom(1024)
+			addr = addr[0]
+			lines = data.split('\n')
+			if lines[0] == '0share-reply':
+				debug("Response from %s", addr)
+				for d in lines[1:]:
+					if d in self.p2p_status:
+						info("Peer %s has %s", addr, d)
+						self.p2p_status[d].add(addr)
+					else:
+						info("Unexpected offer of %s from %s", d, addr)
+			else:
+				info("Invalid reply from %s: %s", addr, repr(data))

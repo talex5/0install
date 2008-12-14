@@ -94,6 +94,7 @@ def run_gui(args):
 
 	handler = gui.GUIHandler()
 	policy = Policy(interface_uri, handler, src = bool(options.source))
+	policy.p2p_enabled = True
 	policy.target_arch = arch.get_architecture(options.os, options.cpu)
 	root_iface = iface_cache.get_interface(interface_uri)
 	policy.solver.extra_restrictions[root_iface] = restrictions
