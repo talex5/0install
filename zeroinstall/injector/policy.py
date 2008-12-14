@@ -48,8 +48,14 @@ class Policy(object):
 	@type src: bool
 	@ivar stale_feeds: set of feeds which are present but haven't been checked for a long time
 	@type stale_feeds: set
+	@ivar p2p_enabled: whether to try getting implementations from local peers
+	@type p2p_enabled: bool
+	@ivar p2p_socket: socket waiting for replies to queries, or None if we're not waiting
+	@type p2p_socket: socket
+	@ivar p2p_status: maps queries to addresses of machines with the answers
+	@type p2p_status: {str: set(str)}
 	"""
-	__slots__ = ['root', 'watchers',
+	__slots__ = ['root', 'watchers', 'p2p_enabled', 'p2p_socket', 'p2p_status',
 		     'freshness', 'handler', '_warned_offline',
 		     'target_arch', 'src', 'stale_feeds', 'solver', '_fetcher']
 	
@@ -75,6 +81,10 @@ class Policy(object):
 		self.freshness = 60 * 60 * 24 * 30
 		self.src = src				# Root impl must be a "src" machine type
 		self.stale_feeds = set()
+
+		self.p2p_enabled = False
+		self.p2p_socket = None
+		self.p2p_status = {}
 
 		from zeroinstall.injector.solver import DefaultSolver
 		self.solver = DefaultSolver(network_full, iface_cache, iface_cache.stores)
@@ -350,6 +360,10 @@ class Policy(object):
 					del downloads_in_progress[f]
 					downloads_finished.add(f)
 
+		if self.p2p_enabled:
+			# Broadcast to see if any peers have the selected versions on the local network
+			self.broadcast_queries(self.solver.selections)
+
 	def need_download(self):
 		"""Decide whether we need to download anything (but don't do it!)
 		@return: true if we MUST download something (feeds or implementations)
@@ -392,3 +406,22 @@ class Policy(object):
 		import warnings
 		warnings.warn("Policy.get_interface is deprecated!", DeprecationWarning, stacklevel = 2)
 		return iface_cache.get_interface(uri)
+
+	def broadcast_queries(self, selections):
+		"""Send request(s) for these missing implementations."""
+		for impl in selections.values():
+			if impl:
+				if impl.id in self.p2p_status: continue	# Already queried for this
+				self.p2p_status[impl.id] = set()
+				# We could batch multiple queries into one packet
+				self.broadcast_query("0share\n" + impl.id)
+
+	def broadcast_query(self, query):
+		"""Broadcast a query on the local network, creating a new socket if required."""
+		if self.p2p_socket is None:
+			assert self.p2p_enabled
+			import socket
+			self.p2p_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, 0)
+			self.p2p_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+		info("Broadcasting query on local network: %s", query)
+		self.p2p_socket.sendto(query, ('<broadcast>', 38339))
