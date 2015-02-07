@@ -118,7 +118,7 @@ let set_selections config app_path sels ~touch_last_checked =
 let foreground_update tools app_path reqs =
   log_info "App '%s' needs to get new selections; current ones are not usable" app_path;
   let ui : Ui.ui_handler = tools#ui in
-  match_lwt ui#run_solver tools `Download_only reqs ~refresh:true with
+  match_lwt ui#run_solver `Download_only reqs ~refresh:true with
   | `Aborted_by_user -> raise_safe "Aborted by user"
   | `Success sels ->
       set_selections tools#config app_path sels ~touch_last_checked:true;

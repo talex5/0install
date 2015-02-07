@@ -6,18 +6,19 @@
 
 open Support.Common
 open Gtk_common
+open Zeroinstall
 
-module Downloader = Zeroinstall.Downloader
-
-let make_watcher solver_box tools ~trust_db reqs =
-  let feed_provider = ref (new Zeroinstall.Feed_provider_impl.feed_provider tools#config tools#distro) in
-  let original_solve = Zeroinstall.Solver.solve_for tools#config !feed_provider reqs in
+let make_watcher solver_box backend reqs =
+  let config = Gui.config backend in
+  let distro = Gui.distro backend in
+  let feed_provider = ref (new Feed_provider_impl.feed_provider config distro) in
+  let original_solve = Solver.solve_for config !feed_provider reqs in
   let original_selections =
     match original_solve with
     | (false, _) -> None
-    | (true, results) -> Some (Zeroinstall.Solver.selections results) in
+    | (true, results) -> Some (Solver.selections results) in
 
-  object (_ : #Zeroinstall.Progress.watcher)
+  object (_ : #Progress.watcher)
     val mutable n_completed_downloads = 0
     val mutable size_completed_downloads = 0L
     val mutable downloads = []
@@ -40,7 +41,7 @@ let make_watcher solver_box tools ~trust_db reqs =
       )
 
     method report feed_url msg =
-      let msg = Printf.sprintf "Feed '%s': %s" (Zeroinstall.Feed_url.format_url feed_url) msg in
+      let msg = Printf.sprintf "Feed '%s': %s" (Feed_url.format_url feed_url) msg in
       Gtk_utils.async (fun () ->
         lwt box = solver_box in
         box#report_error (Safe_exception (msg, ref []));
@@ -94,7 +95,8 @@ let make_watcher solver_box tools ~trust_db reqs =
     method confirm_keys feed_url infos =
       lwt box = solver_box in
       lwt parent = box#ensure_main_window in
-      Trust_box.confirm_keys ~parent tools#config trust_db feed_url infos
+      let trust_db = Gui.trust_db backend in
+      Trust_box.confirm_keys ~parent config trust_db feed_url infos
 
     method confirm message =
       lwt box = solver_box in

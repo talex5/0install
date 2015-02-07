@@ -57,7 +57,7 @@ let check_replacement system = function
 let check_for_updates options reqs old_sels =
   let tools = options.tools in
   let ui : Zeroinstall.Ui.ui_handler = tools#ui in
-  match ui#run_solver tools `Download_only reqs ~refresh:true |> Lwt_main.run with
+  match ui#run_solver `Download_only reqs ~refresh:true |> Lwt_main.run with
   | `Aborted_by_user -> raise (System_exit 1)
   | `Success new_sels ->
       let config = options.config in
@@ -236,11 +236,11 @@ let handle_bg options flags args =
 
         let new_sels =
           if !need_gui || not ready || Zeroinstall.Driver.get_unavailable_selections config ~distro new_sels <> [] then (
-            let interactive_ui = Zeroinstall.Gui.try_get_gui config ~use_gui:Maybe in
+            let interactive_ui = Zeroinstall.Gui.try_get_gui config (lazy distro) tools#make_fetcher (lazy tools#trust_db) ~use_gui:Maybe in
             match interactive_ui with
             | Some gui ->
                 log_info "Background update: trying to use GUI to update %s" name;
-                begin match gui#run_solver tools `Download_only reqs ~systray:true ~refresh:true |> Lwt_main.run with
+                begin match gui#run_solver `Download_only reqs ~systray:true ~refresh:true |> Lwt_main.run with
                 | `Aborted_by_user -> raise (System_exit 0)
                 | `Success gui_sels -> gui_sels end
             | None ->

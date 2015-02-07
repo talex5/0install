@@ -393,15 +393,25 @@ class fake_system tmpdir =
 let forward_to_real_log = ref true
 let real_log = !Support.Logging.handler
 
-class null_ui =
-  object (_ : #Zeroinstall.Ui.ui_handler as 'a)
-    constraint 'a = #Zeroinstall.Progress.watcher
-    inherit Zeroinstall.Console.batch_ui
-    method! confirm_keys feed_url _xml = raise_safe "confirm_keys: %s" (Zeroinstall.Feed_url.format_url feed_url)
-    method! confirm msg = raise_safe "confirm: %s" msg
+class null_progress =
+  object (_ : #Zeroinstall.Progress.watcher)
+    method report feed_url msg =
+      log_warning "Feed %s: %s" (Zeroinstall.Feed_url.format_url feed_url) msg
+    method update _ = ()
+    method monitor _ = ()
+    method confirm_keys feed_url _xml = raise_safe "confirm_keys: %s" (Zeroinstall.Feed_url.format_url feed_url)
+    method confirm msg = raise_safe "confirm: %s" msg
+    method impl_added_to_store = ()
   end
 
-let null_ui = new null_ui
+class null_ui config distro make_fetcher =
+  object (_ : #Zeroinstall.Ui.ui_handler as 'a)
+    constraint 'a = #Zeroinstall.Progress.watcher
+    inherit Zeroinstall.Console.batch_ui config distro make_fetcher
+    inherit! null_progress
+  end
+
+let null_progress = new null_progress
 
 (* Pools need to be released after each test *)
 let download_pools = Queue.create ()
@@ -413,6 +423,8 @@ let make_tools config =
   let distro = Zeroinstall.Distro_impls.generic_distribution config in
   let trust_db = new Zeroinstall.Trust.trust_db config in
   let download_pool = Zeroinstall.Downloader.make_pool ~max_downloads_per_site:2 in
+  let make_fetcher = Zeroinstall.Fetch.make config trust_db distro download_pool in
+  let ui = new null_ui config (lazy distro) make_fetcher in
   Queue.add download_pool download_pools;
   object
     method config = config
@@ -420,8 +432,8 @@ let make_tools config =
     method trust_db = trust_db
     method download_pool = download_pool
     method downloader = download_pool#with_monitor ignore
-    method make_fetcher watcher = Zeroinstall.Fetch.make config trust_db distro download_pool watcher
-    method ui = (null_ui :> Zeroinstall.Ui.ui_handler)
+    method make_fetcher = make_fetcher
+    method ui = (ui :> Zeroinstall.Ui.ui_handler)
   end
 
 let fake_log =

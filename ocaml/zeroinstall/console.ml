@@ -14,7 +14,7 @@ let is_in_progress = function
   | None -> false
   | Some dl -> Downloader.is_in_progress dl
 
-class console_ui =
+class console_ui config distro make_fetcher =
   let downloads : Downloader.download list ref = ref [] in
   let disable_progress = ref 0 in     (* [> 0] when we're asking the user a question *)
   let display_thread = ref None in
@@ -104,13 +104,13 @@ class console_ui =
   object (self : #Ui.ui_handler as 'a)
     constraint 'a = #Progress.watcher
 
-    method run_solver tools ?test_callback ?systray mode reqs ~refresh =
+    method run_solver ?test_callback ?systray mode reqs ~refresh =
+      let distro = Lazy.force distro in
       try_lwt
-        let config = tools#config in
         ignore test_callback;
         ignore systray;
-        let fetcher = tools#make_fetcher (self :> Progress.watcher) in
-        lwt result = Driver.solve_with_downloads config tools#distro fetcher reqs ~watcher:self ~force:refresh ~update_local:refresh in
+        let fetcher = make_fetcher (self :> Progress.watcher) in
+        lwt result = Driver.solve_with_downloads config distro fetcher reqs ~watcher:self ~force:refresh ~update_local:refresh in
         match result with
         | (false, result, _) -> raise_safe "%s" (Solver.get_failure_reason config result)
         | (true, result, feed_provider) ->
@@ -118,7 +118,7 @@ class console_ui =
             match mode with
             | `Select_only -> Lwt.return (`Success sels)
             | `Download_only | `Select_for_run ->
-                match_lwt Driver.download_selections config tools#distro (lazy fetcher) ~feed_provider ~include_packages:true sels with
+                match_lwt Driver.download_selections config distro (lazy fetcher) ~feed_provider ~include_packages:true sels with
                 | `success -> Lwt.return (`Success sels)
                 | `aborted_by_user -> Lwt.return `Aborted_by_user
       finally
@@ -221,9 +221,9 @@ class console_ui =
     method open_cache_explorer = raise_safe "Not available without a GUI (hint: try with --gui)"
   end
 
-class batch_ui =
+class batch_ui config distro make_fetcher =
   object
-    inherit console_ui
+    inherit console_ui config distro make_fetcher
 
     method! monitor _dl = ()
 

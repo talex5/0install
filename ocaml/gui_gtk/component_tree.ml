@@ -6,7 +6,6 @@
 
 open Support.Common
 open Gtk_common
-open Zeroinstall.General
 open Zeroinstall
 
 module FeedAttr = Zeroinstall.Constants.FeedAttr
@@ -37,14 +36,6 @@ let rec count_downloads = function
         | Some extra, Some rest -> Some (Int64.add extra rest) in
       (Int64.add so_far so_far_rest, expected_total)
 
-let first_para text =
-  let first =
-    try
-      let index = Str.search_forward (Str.regexp_string "\n\n") text 0 in
-      String.sub text 0 index
-    with Not_found -> text in
-  Str.global_replace (Str.regexp_string "\n") " " first |> trim
-
 (* Visit all nodes from [start] up to and including [stop]. *)
 exception Stop_walk
 let walk_tree (model:GTree.tree_store) ~start ~stop fn =
@@ -63,7 +54,7 @@ let walk_tree (model:GTree.tree_store) ~start ~stop fn =
 
 module SolverTree = Tree.Make(Solver.Model)
 
-let build_tree_view config ~parent ~packing ~icon_cache ~show_component ~report_bug ~recalculate ~watcher =
+let build_tree_view backend ~parent ~packing ~icon_cache ~show_component ~report_bug ~recalculate ~watcher =
   (* Model *)
   let columns = new GTree.column_list in
   let implementation = columns#add Gobject.Data.caml in
@@ -120,8 +111,11 @@ let build_tree_view config ~parent ~packing ~icon_cache ~show_component ~report_
           Printf.sprintf "Full name: %s" iface
         ) else if col = summary_vc#get_oid then (
           match watcher#feed_provider#get_feed (Feed_url.master_feed_of_iface iface) with
-          | Some (main_feed, _overrides) -> F.get_description config.langs main_feed |> default "-" |> first_para
           | None -> "-"
+          | Some (main_feed, _overrides) ->
+              match Gui.get_description backend main_feed with
+              | [] -> "-"
+              | x::_ -> x
         ) else if col = action_vc#get_oid then (
           "Click here for more options..."
         ) else (
@@ -137,7 +131,7 @@ let build_tree_view config ~parent ~packing ~icon_cache ~show_component ~report_
                     Printf.sprintf "%s\nPreviously preferred version: %s" current prev_version
                 | _ -> current
               ) else if col = fetch_vc#get_oid then (
-                let (_fetch_str, fetch_tip) = Gui.get_fetch_info config impl in
+                let (_fetch_str, fetch_tip) = Gui.get_fetch_info backend impl in
                 fetch_tip
               ) else ""
           | _ -> "No suitable version was found. Double-click here to find out why."
@@ -176,7 +170,7 @@ let build_tree_view config ~parent ~packing ~icon_cache ~show_component ~report_
     if have_source then (
       let compile ~autocompile () =
         Gtk_utils.async ~parent (fun () ->
-          lwt () = Gui.compile config watcher#feed_provider iface ~autocompile in
+          lwt () = Gui.compile backend watcher#feed_provider iface ~autocompile in
           recalculate ~force:false;
           Lwt.return ()
         ) in
@@ -227,7 +221,7 @@ let build_tree_view config ~parent ~packing ~icon_cache ~show_component ~report_
         match feed_provider#get_feed master_feed with
         | Some (main_feed, _overrides) ->
             (main_feed.F.name,
-             default "-" @@ F.get_summary config.langs main_feed,
+             default "-" @@ Gui.get_summary backend main_feed,
              main_feed.F.imported_feeds);
         | None ->
             let name =
@@ -253,13 +247,9 @@ let build_tree_view config ~parent ~packing ~icon_cache ~show_component ~report_
 
       match details with
       | `Selected (impl, children) ->
-          let {Feed_url.id; feed = from_feed} = Impl.get_id impl in
-          let overrides = Feed.load_feed_overrides config from_feed in
-          let user_stability = StringMap.find id overrides.Feed.user_stability in
-
           let version = impl.Impl.parsed_version |> Version.to_string in
           let stability_str =
-            match user_stability with
+            match Gui.get_user_stability backend impl with
             | Some s -> String.uppercase (Impl.format_stability s)
             | None -> Impl.get_attr_ex FeedAttr.stability impl in
           let prev_version = watcher#original_selections
@@ -274,7 +264,7 @@ let build_tree_view config ~parent ~packing ~icon_cache ~show_component ~report_
             | Some prev_version -> Printf.sprintf "%s (was %s)" version prev_version
             | _ -> version in
 
-          let (fetch_str, _fetch_tip) = Gui.get_fetch_info config impl in
+          let (fetch_str, _fetch_tip) = Gui.get_fetch_info backend impl in
           (* Store the summary string, so that we can recover it after displaying progress messages. *)
           Hashtbl.add default_summary_str uri summary;
 

@@ -11,5 +11,8 @@
  *)
 val make_ui :
   General.config ->
+  Distro.distribution Lazy.t ->
+  (Progress.watcher -> Fetch.fetcher) ->
+  Trust.trust_db Lazy.t ->
   Support.Common.yes_no_maybe ->
   Ui.ui_handler

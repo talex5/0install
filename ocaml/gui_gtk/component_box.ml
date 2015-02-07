@@ -148,7 +148,7 @@ source by clicking on the Compile button. If no source is available, the Compile
 be shown shaded.")
 ]
 
-let add_remote_feed ~parent ~watcher ~recalculate tools iface () =
+let add_remote_feed backend ~parent ~watcher ~recalculate iface () =
   let box = GWindow.message_dialog
     ~parent
     ~message_type:`QUESTION
@@ -174,9 +174,7 @@ let add_remote_feed ~parent ~watcher ~recalculate tools iface () =
             begin match Feed_url.parse_non_distro url with
             | `local_feed _ -> raise_safe "Not a remote feed!"
             | `remote_feed _ as feed_url ->
-                let config = tools#config in
-                let fetcher = tools#make_fetcher (watcher :> Progress.watcher) in
-                lwt () = Gui.add_remote_feed config fetcher iface feed_url in
+                lwt () = Gui.add_remote_feed backend watcher iface feed_url in
                 box#destroy ();
                 recalculate ~force:false;
                 Lwt.return () end
@@ -191,14 +189,14 @@ let add_remote_feed ~parent ~watcher ~recalculate tools iface () =
 
   box#show ()
 
-let add_local_feed ~parent ~recalculate config iface () =
+let add_local_feed backend ~parent ~recalculate iface () =
   let box = GWindow.file_chooser_dialog
     ~parent
     ~action:`OPEN
     ~title:"Select XML feed file"
     () in
 
-  box#set_current_folder config.system#getcwd |> ignore;
+  box#set_current_folder (Sys.getcwd ()) |> ignore;
 
   box#add_button_stock `CANCEL `CANCEL;
   box#add_select_button_stock `OPEN `OK;
@@ -211,7 +209,7 @@ let add_local_feed ~parent ~recalculate config iface () =
           match Feed_url.parse_non_distro path with
           | `remote_feed _ -> raise_safe "Not a local feed!"
           | `local_feed _ as feed_url ->
-              Gui.add_feed config iface feed_url;
+              Gui.add_feed backend iface feed_url;
               box#destroy ();
               recalculate ~force:false
         with Safe_exception _ as ex -> Alert_box.report_error ~parent:box ex
@@ -223,9 +221,7 @@ let open_in_browser (system:system) url =
   let browser = default "firefox" (system#getenv "BROWSER") in
   system#spawn_detach ~search_path:true [browser; url]
 
-let make_feeds_tab tools ~trust_db ~recalculate ~watcher window iface =
-  let config = tools#config in
-
+let make_feeds_tab backend ~recalculate ~watcher window iface =
   (* Model *)
   let columns = new GTree.column_list in
   let url = columns#add Gobject.Data.string in
@@ -263,14 +259,14 @@ let make_feeds_tab tools ~trust_db ~recalculate ~watcher window iface =
   let add_local = GButton.button ~packing:button_box#pack ~label:"Add local feed" () in
   let remove_feed = GButton.button ~packing:button_box#pack ~label:"Remove feed" () in
 
-  add_remote#connect#clicked ==> (add_remote_feed ~parent:window ~watcher ~recalculate tools iface);
-  add_local#connect#clicked ==> (add_local_feed ~parent:window ~recalculate config iface);
+  add_remote#connect#clicked ==> (add_remote_feed backend ~parent:window ~watcher ~recalculate iface);
+  add_local#connect#clicked ==> (add_local_feed backend ~parent:window ~recalculate iface);
   remove_feed#connect#clicked ==> (fun () ->
     match selection#get_selected_rows with
     | [path] ->
         let iter = feeds_model#get_iter path in
         let feed_import = feeds_model#get ~row:iter ~column:feed_obj in
-        Gui.remove_feed config iface feed_import.F.feed_src;
+        Gui.remove_feed backend iface feed_import.F.feed_src;
         remove_feed#misc#set_sensitive false;
         recalculate ~force:false;
     | _ -> log_warning "Impossible selection!"
@@ -313,7 +309,7 @@ let make_feeds_tab tools ~trust_db ~recalculate ~watcher window iface =
           begin match watcher#feed_provider#get_feed feed_import.F.feed_src with
           | None -> buffer#insert ~iter:buffer#start_iter "Not yet downloaded."; Lwt.return ()
           | Some (feed, overrides) ->
-              lwt description = Gui.generate_feed_description config trust_db feed overrides in
+              lwt description = Gui.generate_feed_description backend feed overrides in
               clear ();
               add_description_text ~heading_style ~link_style buffer feed description;
               Lwt.return () end
@@ -331,7 +327,7 @@ let make_feeds_tab tools ~trust_db ~recalculate ~watcher window iface =
         let start = iter#backward_to_tag_toggle (Some link_style) in
         let stop = iter#forward_to_tag_toggle (Some link_style) in
         let target = start#get_text ~stop |> trim in
-        open_in_browser config.system target;
+        open_in_browser (Gui.system backend) target;
         true
       ) else false
     ) else false
@@ -433,7 +429,7 @@ let show_explanation_box ~parent iface version reason =
 
 let re_lt = Str.regexp_string "<"
 
-let make_versions_tab config reqs ~recalculate ~watcher window role =
+let make_versions_tab backend reqs ~recalculate ~watcher window role =
   let vbox = GPack.vbox () in
   let iface = !role.Solver.iface in
 
@@ -445,16 +441,13 @@ let make_versions_tab config reqs ~recalculate ~watcher window role =
     ~homogeneous:false ~packing:vbox#pack () in
 
   let set_stability_policy value =
-    let iface_config = {FC.load_iface_config config iface with FC.stability_policy = value} in
-    FC.save_iface_config config iface iface_config;
+    Gui.set_stability_policy backend iface value;
     recalculate ~force:false in
-
-  let iface_config = FC.load_iface_config config iface in
 
   Preferences_box.combo
     ~table ~top:0 ~label:"Preferred stability: "
     ~choices:[None; Some Stable; Some Testing; Some Developer]
-    ~value:iface_config.FC.stability_policy
+    ~value:(Gui.get_stability_policy backend iface)
     ~to_string:(function
       | None -> "Use default setting"
       | Some level -> Impl.format_stability level |> String.capitalize
@@ -522,27 +515,21 @@ let make_versions_tab config reqs ~recalculate ~watcher window role =
             let menu = GMenu.menu () in
             let stability_menu = GMenu.menu_item ~packing:menu#add ~label:"Rating" () in
             let submenu = build_stability_menu (fun stability ->
-              Gui.set_impl_stability config (Impl.get_id impl) stability;
+              Gui.set_impl_stability backend (Impl.get_id impl) stability;
               recalculate ~force:false
             ) in
             stability_menu#set_submenu submenu;
 
-            let add_open_item path =
+            Gui.lookup_path backend impl |> if_some (fun path ->
               let item = GMenu.menu_item ~packing:menu#add ~label:"Open in file manager" () in
               item#connect#activate ==> (fun () ->
-                U.xdg_open_dir config.system path
-              ) in
-            begin match (Impl.existing_source impl).Impl.impl_type with
-            | `local_impl path -> add_open_item path
-            | `cache_impl info ->
-                let path = Stores.lookup_maybe config.system info.Impl.digests config.stores in
-                path |> if_some add_open_item
-            | `package_impl _ -> () end;
+                U.xdg_open_dir (Gui.system backend) path
+              )
+            );
 
             let explain = GMenu.menu_item ~packing:menu#add ~label:"Explain this decision" () in
             explain#connect#activate ==> (fun () ->
-              let {Solver.iface; source; _} = !role in
-              let reason = Justify.justify_decision config watcher#feed_provider reqs iface ~source (Impl.get_id impl) in
+              let reason = Gui.explain_decision backend ~feed_provider:watcher#feed_provider reqs !role impl in
               show_explanation_box ~parent:window iface version_str reason
             );
             menu#popup ~button:(B.button bev) ~time:(B.time bev);
@@ -555,23 +542,10 @@ let make_versions_tab config reqs ~recalculate ~watcher window role =
     method update =
       model#clear ();
       let (_ready, result) = watcher#results in
-      let (selected, impls) = Gui.list_impls result !role in
-      let get_overrides =
-        let cache = ref StringMap.empty in
-        fun feed ->
-          match !cache |> StringMap.find feed with
-          | Some result -> result
-          | None ->
-              let result = F.load_feed_overrides config (Feed_url.parse feed) in
-              cache := !cache |> StringMap.add feed result;
-              result in
-
-      impls |> List.iter (fun (impl, problem) ->
-        let from_feed = Impl.get_attr_ex FeedAttr.from_feed impl in
-        let impl_id = Impl.get_attr_ex FeedAttr.id impl in
-        let overrides = get_overrides from_feed in
+      let (selected, impls) = Gui.list_impls backend result !role in
+      impls |> List.iter (fun (impl, problem, user_stability) ->
         let stability_value =
-          match StringMap.find impl_id overrides.F.user_stability with
+          match user_stability with
           | Some user_stability -> Impl.format_stability user_stability |> String.uppercase
           | None -> Q.AttrMap.get_no_ns FeedAttr.stability impl.Impl.props.Impl.attrs |> default "testing" in
 
@@ -585,7 +559,7 @@ let make_versions_tab config reqs ~recalculate ~watcher window role =
           | None -> "None"
           | Some problem -> Impl_provider.describe_problem impl problem in
 
-        let (fetch_str, fetch_tip) = Gui.get_fetch_info config impl in
+        let (fetch_str, fetch_tip) = Gui.get_fetch_info backend impl in
 
         let row = model#append () in
         model#set ~row ~column:version @@ Version.to_string impl.Impl.parsed_version;
@@ -594,7 +568,7 @@ let make_versions_tab config reqs ~recalculate ~watcher window role =
         model#set ~row ~column:langs @@ default "-" @@ Q.AttrMap.get_no_ns FeedAttr.langs impl.Impl.props.Impl.attrs;
         model#set ~row ~column:arch arch_value;
         model#set ~row ~column:notes notes_value;
-        model#set ~row ~column:weight (if Some impl = selected then 700 else 400);
+        model#set ~row ~column:weight (if Some impl == selected then 700 else 400);
         model#set ~row ~column:unusable (problem <> None);
         model#set ~row ~column:fetch fetch_str;
         model#set ~row ~column:tooltip (Str.global_replace re_lt "&lt;" fetch_tip);
@@ -602,8 +576,7 @@ let make_versions_tab config reqs ~recalculate ~watcher window role =
       )
   end
 
-let create tools ~trust_db reqs role ~recalculate ~select_versions_tab ~watcher =
-  let config = tools#config in
+let create backend reqs role ~recalculate ~select_versions_tab ~watcher =
   let title = Printf.sprintf "Properties for %s" (Solver.Model.Role.to_string role) in
   let dialog = GWindow.dialog ~title () in
   dialog#set_default_size
@@ -613,9 +586,9 @@ let create tools ~trust_db reqs role ~recalculate ~select_versions_tab ~watcher 
   (* Tabs *)
   let notebook = GPack.notebook ~packing:(dialog#vbox#pack ~expand:true ~fill:true) () in
   let label text = (GMisc.label ~text () :> GObj.widget) in
-  let feeds_tab = make_feeds_tab tools ~trust_db ~recalculate ~watcher dialog role.Solver.iface in
+  let feeds_tab = make_feeds_tab backend ~recalculate ~watcher dialog role.Solver.iface in
   let role = ref role in
-  let versions_tab = make_versions_tab config reqs ~recalculate ~watcher dialog role in
+  let versions_tab = make_versions_tab backend reqs ~recalculate ~watcher dialog role in
   append_page notebook ~tab_label:(label "Feeds") (feeds_tab#widget);
   append_page notebook ~tab_label:(label "Versions") (versions_tab#widget);
 
@@ -636,7 +609,7 @@ let create tools ~trust_db reqs role ~recalculate ~select_versions_tab ~watcher 
   dialog#connect#response ==> (function
     | `COMPILE ->
         Gtk_utils.async ~parent:dialog (fun () ->
-          lwt () = Gui.compile config watcher#feed_provider !role.Solver.iface ~autocompile:true in
+          lwt () = Gui.compile backend watcher#feed_provider !role.Solver.iface ~autocompile:true in
           recalculate ~force:false;
           Lwt.return ()
         )

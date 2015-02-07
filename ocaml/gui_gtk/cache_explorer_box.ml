@@ -184,7 +184,8 @@ let confirm_deletion ~parent n_items =
   box#show ();
   result
 
-let open_cache_explorer config =
+let open_cache_explorer backend =
+  let config = Zeroinstall.Gui.config backend in
   let finished, set_finished = Lwt.wait () in
 
   let dialog = GWindow.dialog ~title:"0install Cache Explorer" () in

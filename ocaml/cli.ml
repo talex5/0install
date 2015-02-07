@@ -247,18 +247,18 @@ let no_command = (make_command_hidden handle_no_command @@ common_options @ show
 let make_tools config =
   let gui = ref Maybe in
   let pool = ref None in
-  let ui = lazy (Zeroinstall.Default_ui.make_ui config !gui) in
   let distro = lazy (Zeroinstall.Distro_impls.get_host_distribution config) in
   let trust_db = lazy (new Zeroinstall.Trust.trust_db config) in
   let download_pool = lazy (let p = Zeroinstall.Downloader.make_pool ~max_downloads_per_site:2 in pool := Some p; p) in
-  let make_fetcher = lazy (Zeroinstall.Fetch.make config (Lazy.force trust_db) (Lazy.force distro) (Lazy.force download_pool)) in
+  let make_fetcher watcher = Zeroinstall.Fetch.make config (Lazy.force trust_db) (Lazy.force distro) (Lazy.force download_pool) watcher in
+  let ui = lazy (Zeroinstall.Default_ui.make_ui config distro make_fetcher trust_db !gui) in
   object (_ : Options.tools)
     method config = config
     method ui = Lazy.force ui
     method distro = Lazy.force distro
     method download_pool = Lazy.force download_pool
     method set_use_gui value = gui := value
-    method make_fetcher watcher = (Lazy.force make_fetcher) watcher
+    method make_fetcher = make_fetcher
     method trust_db = Lazy.force trust_db
     method use_gui = !gui
     method release = !pool |> if_some (fun pool -> pool#release)

@@ -38,9 +38,9 @@ let text_area ?(mono=false) ?(text="") ~packing () =
 
   tv#buffer
 
-let create config ?run_test ?last_error ~role ~results =
+let create backend ?run_test ?last_error ~role ~results =
   (* Collect information about system *)
-  let details = Zeroinstall.Gui.get_bug_report_details config ~role results in
+  let details = Zeroinstall.Gui.get_bug_report_details backend ~role results in
 
   (* Create dialog box *)
   let box = GWindow.dialog

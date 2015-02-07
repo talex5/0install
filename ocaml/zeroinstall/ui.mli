@@ -17,7 +17,6 @@ class type ui_handler =
      * @param systray is used during background updates - just show an icon in the systray if possible
      *)
     method run_solver :
-      < config : General.config; distro : Distro.distribution; make_fetcher : Progress.watcher -> Fetch.fetcher; .. > ->
       ?test_callback:(Selections.t -> string Lwt.t) ->
       ?systray:bool ->
       select_mode ->

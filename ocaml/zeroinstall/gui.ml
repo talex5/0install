@@ -15,6 +15,13 @@ module U = Support.Utils
 module Q = Support.Qdom
 module G = Support.Gpg
 
+type t = {
+  config : config;
+  trust_db : Trust.trust_db Lazy.t;
+  distro : Distro.distribution Lazy.t;
+  make_fetcher : Progress.watcher -> Fetch.fetcher;
+}
+
 type feed_description = {
   times : (string * float) list;
   summary : string option;
@@ -41,13 +48,13 @@ let get_download_size info impl =
         | None -> log_info "Implementation %s has no usable retrieval methods!" (Impl.get_attr_ex FeedAttr.id impl); None
       )
 
-let get_fetch_info config impl =
+let get_fetch_info t impl =
   try
     match impl.Impl.impl_type with
     | `binary_of _ -> ("(compile)", "Need to compile from source")
     | `local_impl path -> ("(local)", path)
     | `cache_impl info -> (
-        match Stores.lookup_maybe config.system info.Impl.digests config.stores with
+        match Stores.lookup_maybe t.config.system info.Impl.digests t.config.stores with
         | None ->
           begin match get_download_size info impl with
           | Some size ->
@@ -106,7 +113,7 @@ let have_source_for feed_provider iface =
     )
   )
 
-let list_impls results role =
+let list_impls t results role =
   let {Solver.iface; source; scope = _} = role in
   let impl_provider = Solver.impl_provider role in
   let selected_impl = Solver.Model.get_selected role results in
@@ -119,6 +126,13 @@ let list_impls results role =
   let bad_impls = List.map (fun (i, prob) -> (i, Some prob)) candidates.rejects in
   let all_impls = List.sort by_version @@ good_impls @ bad_impls in
 
+  let get_overrides = U.memoize ~initial_size:2 (F.load_feed_overrides t.config) in
+  let all_impls = all_impls |> List.map (fun (impl, problem) ->
+    let impl_id = Impl.get_id impl in
+    let overrides = get_overrides impl_id.Feed_url.feed in
+    let user_override = StringMap.find impl_id.Feed_url.id overrides.Feed.user_stability in
+    (impl, problem, user_override)
+  ) in
   (selected_impl, all_impls)
 
 (** Download an icon for this feed and add it to the
@@ -145,49 +159,109 @@ let download_icon (fetcher:Fetch.fetcher) (feed_provider:Feed_provider.feed_prov
   | Some href ->
       fetcher#download_icon parsed_url href
 
-let add_feed config iface feed_url =
+let make_icon_cache t ~fetcher ~load_png_icon =
+  object
+    val mutable icon_of_iface : 'a option StringMap.t = StringMap.empty
+    val mutable update_icons = false
+
+    (** Setting this to [true] flushes the in-memory cache and forces a (background) download
+     * of each icon that is then requested using [get]. This is set to [true] when the user
+     * clicks the Refresh button and set back to [false] after the tree has been rebuilt. *)
+    method set_update_icons value =
+      if value then
+        icon_of_iface <- StringMap.empty;
+      update_icons <- value
+
+    (** Getting a icon from the cache will first try the memory cache, then the disk cache.
+        If no icon is found but the feed gives a download location then we start a download in
+        the background and call [update] when the new icon arrives. *)
+    method get ~update ~feed_provider iface =
+      match icon_of_iface |> StringMap.find iface with
+      | Some icon -> icon
+      | None ->
+          (* Not in the memory cache. Try the disk cache next. *)
+
+          let load_and_cache_icon path =
+            let icon = load_png_icon path in
+            icon_of_iface <- icon_of_iface |> StringMap.add iface icon;
+            icon in
+
+          let master_feed = Feed_url.master_feed_of_iface iface in
+          let icon_path = Feed_cache.get_cached_icon_path t.config master_feed in
+          let icon = icon_path |> pipe_some load_and_cache_icon in
+
+          (* Download a new icon if we don't have one, or if the user did a 'Refresh'.
+           * (if we have an icon_path but we couldn't read it, we don't fetch). *)
+          if (icon_path = None || update_icons) && t.config.network_use <> Offline then (
+            (* Prevent further updates *)
+            if not (StringMap.mem iface icon_of_iface) then icon_of_iface <- icon_of_iface |> StringMap.add iface None;
+            Lwt.ignore_result (
+              try_lwt
+                lwt () = download_icon fetcher feed_provider master_feed in
+                (* If the icon is now in the disk cache, load it into the memory cache and trigger a refresh.
+                   If not, we'll be left with None in the cache so we don't try again. *)
+                let icon_path = Feed_cache.get_cached_icon_path t.config master_feed in
+                lwt () = Lwt_unix.yield () in (* Make sure we're not already inside update() *)
+                icon_path |> if_some (fun path ->
+                  if load_and_cache_icon path <> None then update ()
+                );
+                Lwt.return ()
+              with ex ->
+                log_warning ~ex "Icon download failed";
+                Lwt.return ()
+            )
+          );
+          (* else: if no icon is available for downloading, more attempts are made later.
+             It can happen that no icon is available because the feed was not downloaded yet, in which case
+             it's desirable to try again once the feed is available. *)
+
+          icon
+  end
+
+let add_feed t iface feed_url =
   let (`remote_feed url | `local_feed url) = feed_url in
 
-  let feed = Feed_cache.get_cached_feed config feed_url |? lazy (raise_safe "Failed to read new feed!") in
+  let feed = Feed_cache.get_cached_feed t.config feed_url |? lazy (raise_safe "Failed to read new feed!") in
   match Feed.get_feed_targets feed with
   | [] -> raise_safe "Feed '%s' is not a feed for '%s'" url iface
   | feed_for when List.mem iface feed_for ->
       let user_import = Feed.make_user_import feed_url in
-      let iface_config = Feed_cache.load_iface_config config iface in
+      let iface_config = Feed_cache.load_iface_config t.config iface in
 
       let extra_feeds = iface_config.Feed_cache.extra_feeds in
       if List.mem user_import extra_feeds then (
         raise_safe "Feed from '%s' has already been added!" url
       ) else (
         let extra_feeds = user_import :: extra_feeds in
-        Feed_cache.save_iface_config config iface {iface_config with Feed_cache.extra_feeds};
+        Feed_cache.save_iface_config t.config iface {iface_config with Feed_cache.extra_feeds};
       );
   | feed_for -> raise_safe "This is not a feed for '%s'.\nOnly for:\n%s" iface (String.concat "\n" feed_for)
 
-let add_remote_feed config fetcher iface (feed_url:[`remote_feed of feed_url]) =
+let add_remote_feed t watcher iface (feed_url:[`remote_feed of feed_url]) =
+  let fetcher = t.make_fetcher (watcher :> Progress.watcher) in
   match_lwt Driver.download_and_import_feed fetcher feed_url with
   | `aborted_by_user -> Lwt.return ()
-  | `success _ | `no_update -> add_feed config iface feed_url; Lwt.return ()
+  | `success _ | `no_update -> add_feed t iface feed_url; Lwt.return ()
 
-let remove_feed config iface feed_url =
-  let iface_config = Feed_cache.load_iface_config config iface in
+let remove_feed t iface feed_url =
+  let iface_config = Feed_cache.load_iface_config t.config iface in
   let user_import = Feed.make_user_import feed_url in
   let extra_feeds = iface_config.Feed_cache.extra_feeds |> List.filter ((<>) user_import) in
   if iface_config.Feed_cache.extra_feeds = extra_feeds then (
     raise_safe "Can't remove '%s'; it is not a user-added feed of %s" (Feed_url.format_url feed_url) iface;
   ) else (
-    Feed_cache.save_iface_config config iface {iface_config with Feed_cache.extra_feeds};
+    Feed_cache.save_iface_config t.config iface {iface_config with Feed_cache.extra_feeds};
   )
 
-let set_impl_stability config {Feed_url.feed; Feed_url.id} rating =
-  let overrides = Feed.load_feed_overrides config feed in
+let set_impl_stability t {Feed_url.feed; Feed_url.id} rating =
+  let overrides = Feed.load_feed_overrides t.config feed in
   let overrides = {
     overrides with F.user_stability =
       match rating with
       | None -> StringMap.remove id overrides.F.user_stability
       | Some rating -> StringMap.add id rating overrides.F.user_stability
   } in
-  F.save_feed_overrides config feed overrides
+  F.save_feed_overrides t.config feed overrides
 
 (** Run [argv] and return its stdout on success.
  * On error, report both stdout and stderr. *)
@@ -221,14 +295,14 @@ let build_and_register config iface min_0compile_version =
   Lwt.return ()
 
 (* Running subprocesses is a bit messy; this is just a direct translation of the (old) Python code. *)
-let compile config feed_provider iface ~autocompile =
+let compile t feed_provider iface ~autocompile =
   let our_min_version = Version.parse "1.0" in     (* The oldest version of 0compile we support *)
 
   lwt () =
     if autocompile then (
       lwt _ =
         run_subprocess [|
-          config.abspath_0install; "run";
+          t.config.abspath_0install; "run";
           "--message"; "Download the 0compile tool to compile the source code";
           "--not-before=" ^ (Version.to_string our_min_version);
           "http://0install.net/2006/interfaces/0compile.xml";
@@ -239,7 +313,7 @@ let compile config feed_provider iface ~autocompile =
     ) else (
       (* Prompt user to choose source version *)
       lwt stdout = run_subprocess [|
-        config.abspath_0install; "download"; "--xml";
+        t.config.abspath_0install; "download"; "--xml";
         "--message"; "Download the source code to be compiled";
         "--gui"; "--source";
         "--"; iface;
@@ -252,7 +326,7 @@ let compile config feed_provider iface ~autocompile =
         match Element.compile_min_version sel with
         | None -> our_min_version
         | Some min_version -> max our_min_version (Version.parse min_version) in
-      build_and_register config iface min_version
+      build_and_register t.config iface min_version
     ) in
 
   (* A new local feed may have been registered, so reload it from the disk cache *)
@@ -260,8 +334,8 @@ let compile config feed_provider iface ~autocompile =
   feed_provider#forget_user_feeds iface;
   Lwt.return ()      (* The plugin should now recalculate *)
 
-let get_bug_report_details config ~role (ready, results) =
-  let system = config.system in
+let get_bug_report_details t ~role (ready, results) =
+  let system = t.config.system in
   let sels = Solver.selections results in
   let root_role = Solver.Model.((requirements results).role) in
   let issue_file = "/etc/issue" in
@@ -284,9 +358,9 @@ let get_bug_report_details config ~role (ready, results) =
   add "0install version %s\n" About.version;
 
   if ready then (
-    Tree.print config (Buffer.add_string b) sels
+    Tree.print t.config (Buffer.add_string b) sels
   ) else (
-    Buffer.add_string b @@ Solver.get_failure_reason config results
+    Buffer.add_string b @@ Solver.get_failure_reason t.config results
   );
 
   let platform = system#platform in
@@ -300,11 +374,11 @@ let get_bug_report_details config ~role (ready, results) =
 
   Buffer.contents b
 
-let run_test config distro test_callback (ready, results) =
+let run_test t test_callback (ready, results) =
   try_lwt
     if ready then (
       let sels = Solver.selections results in
-      match Driver.get_unavailable_selections config ~distro sels with
+      match Driver.get_unavailable_selections t.config ~distro:(Lazy.force t.distro) sels with
       | [] -> test_callback sels
       | missing ->
           let details =
@@ -319,7 +393,7 @@ let run_test config distro test_callback (ready, results) =
   with Safe_exception _ as ex ->
     Lwt.return (Printexc.to_string ex)
 
-let try_get_gui config ~use_gui =
+let try_get_gui config distro make_fetcher trust_db ~use_gui =
   let system = config.system in
   if use_gui = No then None
   else (
@@ -366,7 +440,12 @@ let try_get_gui config ~use_gui =
             else raise_safe "Can't use GUI - plugin cannot be loaded"
         | Some gui_plugin ->
             try
-              gui_plugin config
+              gui_plugin {
+                config;
+                trust_db;
+                distro;
+                make_fetcher;
+              }
             with ex ->
               log_warning ~ex "Failed to create GTK GUI";
               None
@@ -404,13 +483,13 @@ let send_bug_report iface_uri message : string Lwt.t =
     log_info ~ex "Curl error: %s" !error_buffer;
     raise_safe "Failed to submit bug report: %s\n%s" (Printexc.to_string ex) !error_buffer
 
-let get_sigs config url =
-  match Feed_cache.get_cached_feed_path config url with
+let get_sigs t url =
+  match Feed_cache.get_cached_feed_path t.config url with
   | None -> Lwt.return []
   | Some cache_path ->
-      if config.system#file_exists cache_path then (
-        let xml = U.read_file config.system cache_path in
-        lwt sigs, warnings = Support.Gpg.verify config.system xml in
+      if t.config.system#file_exists cache_path then (
+        let xml = U.read_file t.config.system cache_path in
+        lwt sigs, warnings = Support.Gpg.verify t.config.system xml in
         if warnings <> "" then log_info "get_last_modified: %s" warnings;
         Lwt.return sigs
       ) else Lwt.return []
@@ -418,15 +497,24 @@ let get_sigs config url =
 let format_para para =
   para |> Str.split (Str.regexp_string "\n") |> List.map trim |> String.concat " "
 
+let get_summary t feed =
+  F.get_summary t.config.langs feed
+
+let get_description t feed =
+  match F.get_description t.config.langs feed with
+  | Some description -> Str.split (Str.regexp_string "\n\n") description |> List.map format_para
+  | None -> []
+
 (** The formatted text for the details panel. *)
-let generate_feed_description config trust_db feed overrides =
+let generate_feed_description t feed overrides =
   let times = ref [] in
   lwt signatures =
     match feed.F.url with
     | `local_feed _ -> Lwt.return []
     | `remote_feed _ as feed_url ->
+        let trust_db = Lazy.force t.trust_db in
         let domain = Trust.domain_from_url feed_url in
-        lwt sigs = get_sigs config feed_url in
+        lwt sigs = get_sigs t feed_url in
         if sigs <> [] then (
           match trust_db#oldest_trusted_sig domain sigs with
           | Some last_modified -> times := ("Last upstream change", last_modified) :: !times
@@ -437,7 +525,7 @@ let generate_feed_description config trust_db feed overrides =
           times := ("Last checked", last_checked) :: !times
         );
 
-        Feed_cache.get_last_check_attempt config feed_url |> if_some (fun last_check_attempt ->
+        Feed_cache.get_last_check_attempt t.config feed_url |> if_some (fun last_check_attempt ->
           match overrides.F.last_checked with
           | Some last_checked when last_check_attempt <= last_checked ->
               () (* Don't bother reporting successful attempts *)
@@ -447,18 +535,13 @@ let generate_feed_description config trust_db feed overrides =
 
         sigs |> Lwt_list.map_s (function
           | G.ValidSig {G.fingerprint; G.timestamp} ->
-              lwt name = G.get_key_name config.system fingerprint in
+              lwt name = G.get_key_name t.config.system fingerprint in
               let is_trusted =
                 if trust_db#is_trusted ~domain fingerprint then `Trusted else `Not_trusted in
               `Valid (fingerprint, timestamp, name, is_trusted) |> Lwt.return
           | other_sig ->
               `Invalid (G.string_of_sig other_sig) |> Lwt.return
         ) in
-
-  let description =
-    match F.get_description config.langs feed with
-    | Some description -> Str.split (Str.regexp_string "\n\n") description |> List.map format_para
-    | None -> ["-"] in
 
   let homepages = Element.feed_metadata feed.F.root |> U.filter_map (function
     | `homepage homepage -> Some (Element.simple_content homepage)
@@ -467,8 +550,192 @@ let generate_feed_description config trust_db feed overrides =
 
   Lwt.return {
     times = List.rev !times;
-    summary = F.get_summary config.langs feed;
-    description;
+    summary = get_summary t feed;
+    description = get_description t feed;
     homepages;
     signatures;
   }
+
+let system t = t.config.system
+let config t = t.config
+let trust_db t = Lazy.force t.trust_db
+let distro t = Lazy.force t.distro
+
+let get_user_stability t impl =
+  let {Feed_url.id; feed = from_feed} = Impl.get_id impl in
+  let overrides = Feed.load_feed_overrides t.config from_feed in
+  StringMap.find id overrides.Feed.user_stability
+
+let get_stability_policy t iface =
+  let iface_config = Feed_cache.load_iface_config t.config iface in
+  iface_config.Feed_cache.stability_policy
+
+let set_stability_policy t iface value =
+  let iface_config = {Feed_cache.load_iface_config t.config iface with Feed_cache.stability_policy = value} in
+  Feed_cache.save_iface_config t.config iface iface_config
+
+let lookup_path t impl =
+  match (Impl.existing_source impl).Impl.impl_type with
+  | `local_impl path -> Some path
+  | `cache_impl info -> Stores.lookup_maybe t.config.system info.Impl.digests t.config.stores
+  | `package_impl _ -> None
+
+let explain_decision t ~feed_provider reqs {Solver.iface; source; _} impl =
+  Justify.justify_decision t.config feed_provider reqs iface ~source (Impl.get_id impl)
+
+let download_selections t fetcher ~feed_provider results =
+  let sels = Solver.selections results in
+  Driver.download_selections t.config (Lazy.force t.distro) fetcher ~include_packages:true ~feed_provider sels
+
+let quick_solve t =
+  Driver.quick_solve (object
+    method config = t.config
+    method distro = Lazy.force t.distro
+  end)
+
+let solve_with_downloads t fetcher ~watcher reqs ~force =
+  Driver.solve_with_downloads t.config (distro t) fetcher ~watcher reqs ~force ~update_local:true
+
+let make_fetcher t = t.make_fetcher
+
+let batch_ui t = (new Console.batch_ui t.config t.distro t.make_fetcher :> Ui.ui_handler)
+
+let xdg_add_to_menu t iface =
+  let config = t.config in
+  let system = config.system in
+  let feed_url = Feed_url.master_feed_of_iface iface in
+  let feed = Feed_cache.get_cached_feed config feed_url |? lazy (raise_safe "BUG: feed still not cached!") in
+  U.finally_do
+    (U.rmtree system ~even_if_locked:true)
+    (U.make_tmp_dir system ~prefix:"0desktop-" (Filename.get_temp_dir_name ()))
+    (fun tmpdir ->
+      let name = feed.F.name |> String.lowercase |> Str.global_replace U.re_dir_sep "-" |> Str.global_replace U.re_space "" in
+      let desktop_name = tmpdir +/ ("zeroinstall-" ^ name ^ ".desktop") in
+      let icon_path = Feed_cache.get_cached_icon_path config feed.F.url in
+      desktop_name |> system#with_open_out [Open_wronly; Open_creat] ~mode:0o600 (fun ch ->
+        Printf.fprintf ch
+          "[Desktop Entry]\n\
+          # This file was generated by 0install.\n\
+          # See the Zero Install project for details: http://0install.net\n\
+          Type=Application\n\
+          Version=1.0\n\
+          Name=%s\n\
+          Comment=%s\n\
+          Exec=0launch -- %s %%f\n\
+          Categories=Application;%s\n"
+          feed.F.name
+          (F.get_summary config.langs feed |> default "")
+          (Feed_url.format_url feed.F.url)
+          (F.get_category feed |> default "");
+
+        icon_path |> if_some (Printf.fprintf ch "Icon=%s\n");
+        if F.needs_terminal feed then output_string ch "Terminal=true\n";
+      );
+      system#create_process ["xdg-desktop-menu"; "install"; desktop_name] Unix.stdin Unix.stdout Unix.stderr
+      |> Support.System.reap_child;
+    )
+
+exception Found
+let discover_existing_apps t =
+  let config = t.config in
+  let re_exec = Str.regexp "^Exec=0launch \\(-- \\)?\\([^ ]*\\) " in
+  let system = config.system in
+  let already_installed = ref [] in
+  config.basedirs.Basedir.data |> List.iter (fun data_path ->
+    let apps_dir = data_path +/ "applications" in
+    if system#file_exists apps_dir then (
+      match system#readdir apps_dir with
+      | Problem ex -> log_warning ~ex "Failed to scan directory '%s'" apps_dir
+      | Success items ->
+          items |> Array.iter (fun desktop_file ->
+            if U.starts_with desktop_file "zeroinstall-" && U.ends_with desktop_file ".desktop" then (
+              let full = apps_dir +/ desktop_file in
+              try
+                full |> system#with_open_in [Open_rdonly] (fun ch ->
+                  while true do
+                    let line = input_line ch in
+                    if Str.string_match re_exec line 0 then (
+                      let uri = Str.matched_group 2 line in
+                      let url = Feed_url.master_feed_of_iface uri in
+                      let name =
+                        try
+                          match Feed_cache.get_cached_feed config url with
+                          | Some feed -> feed.F.name
+                          | None -> Filename.basename uri
+                        with Safe_exception _ ->
+                          Filename.basename uri in
+                      already_installed := (name, full, uri) :: !already_installed;
+                      raise Found
+                    )
+                  done
+                )
+              with
+              | End_of_file -> log_info "Failed to find Exec line in %s" full
+              | Found -> ()
+              | ex -> log_warning ~ex "Failed to load .desktop file %s" full
+            )
+          )
+    )
+  );
+  !already_installed
+
+let show_help_exn t sel =
+  let config = t.config in
+  let system = config.system in
+  let help_dir = Element.doc_dir sel in
+  let id = Element.id sel in
+
+  let path =
+    if U.starts_with id "package:" then (
+      match help_dir with
+      | None -> raise_safe "No doc-dir specified for package implementation"
+      | Some help_dir ->
+          if Filename.is_relative help_dir then
+            raise_safe "Package doc-dir must be absolute! (got '%s')" help_dir
+          else
+            help_dir
+    ) else (
+      let path = Selections.get_path system config.stores sel |? lazy (raise_safe "BUG: not cached!") in
+      match help_dir with
+      | Some help_dir -> path +/ help_dir
+      | None ->
+          match Element.get_command "run" sel with
+          | None -> path
+          | Some run ->
+              match Element.path run with
+              | None -> path
+              | Some main ->
+                  (* Hack for ROX applications. They should be updated to set doc-dir. *)
+                  let help_dir = path +/ (Filename.dirname main) +/ "Help" in
+                  if U.is_dir system help_dir then help_dir
+                  else path
+    ) in
+  U.xdg_open_dir ~exec:false system path
+
+(** If [feed] <needs-terminal> then find one and add it to the start of args. *)
+let maybe_with_terminal system feed args =
+  if Feed.needs_terminal feed then (
+    if (system#platform).Platform.os = "MacOSX" then (
+      (* This is probably wrong, or at least inefficient (we ignore [args] and invoke 0launch again).
+       * But I don't know how to make the escaping right - someone on OS X should check it... *)
+      let osascript = U.find_in_path_ex system "osascript" in
+      let script = "0launch -- " ^ (Feed_url.format_url feed.F.url) in
+      [osascript; "-e"; "tell app \"Terminal\""; "-e"; "activate"; "-e"; "do script \"" ^ script ^ "\""; "-e"; "end tell"]
+    ) else (
+      let terminal_args =
+        ["x-terminal-emulator"; "xterm"; "gnome-terminal"; "rxvt"; "konsole"] |> U.first_match (fun terminal ->
+          U.find_in_path system terminal |> pipe_some (fun path ->
+            if terminal = "gnome-terminal" then Some [path; "-x"]
+            else Some [path; "-e"]
+          )
+        ) |? lazy (raise_safe "Can't find a suitable terminal emulator") in
+      terminal_args @ args
+    )
+  ) else args
+
+let spawn t sels =
+  let uri = Selections.((root_role sels).iface) in
+  let feed_url = Feed_url.master_feed_of_iface uri in
+  let feed = Feed_cache.get_cached_feed t.config feed_url |? lazy (raise_safe "BUG: feed still not cached! %s" uri) in
+  let exec args ~env = t.config.system#spawn_detach ~env (maybe_with_terminal t.config.system feed args) in
+  Exec.execute_selections t.config ~exec sels []

@@ -167,7 +167,7 @@ let get_selections options ~refresh ?test_callback reqs mode =
   let select_with_refresh refresh =
     (* This is the slow path: we need to download things before selecting *)
     let ui : Zeroinstall.Ui.ui_handler = tools#ui in
-    ui#run_solver tools ?test_callback mode reqs ~refresh in
+    ui#run_solver ?test_callback mode reqs ~refresh in
 
   (* Check whether we can run immediately, without downloading anything. This requires
      - the user didn't ask to refresh or show the GUI

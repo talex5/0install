@@ -371,7 +371,7 @@ let suite = "distro">::: [
     Fake_system.fake_log#reset;
 
     (* Tell distro to fetch information about candidates... *)
-    Lwt_main.run (deb#check_for_candidates ~ui:Fake_system.null_ui bt_feed);
+    Lwt_main.run (deb#check_for_candidates ~ui:Fake_system.null_progress bt_feed);
 
     (* Now we see the uninstalled package *)
     let compare_version a b = compare a.Impl.parsed_version b.Impl.parsed_version in

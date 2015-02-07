@@ -46,7 +46,7 @@ let make_dl_tester () =
   let log = ref [] in
   let download_pool = D.make_pool ~max_downloads_per_site:2 in
   Queue.add download_pool Fake_system.download_pools;
-  let downloader = download_pool#with_monitor Fake_system.null_ui#monitor in
+  let downloader = download_pool#with_monitor (fun _ -> ()) in
   let waiting = Hashtbl.create 10 in
 
   (* Intercept the download and return a new blocker *)

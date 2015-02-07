@@ -60,7 +60,7 @@ let suite = "feed-cache">::: [
     trust_db#trust_key "92429807C9853C0744A68B9AAE07828059A53CC1" ~domain:"foo";
     let download_pool = Zeroinstall.Downloader.make_pool ~max_downloads_per_site:2 in
     let distro = Zeroinstall.Distro_impls.generic_distribution config in
-    let fetcher = Zeroinstall.Fetch.make config trust_db distro download_pool Fake_system.null_ui in
+    let fetcher = Zeroinstall.Fetch.make config trust_db distro download_pool Fake_system.null_progress in
     let foo_signed_xml = U.read_file config.system (Fake_system.tests_dir +/ "foo.xml") in
 
     (* Unsigned *)
@@ -91,7 +91,7 @@ let suite = "feed-cache">::: [
     (* Updated *)
     let foo_signed_xml_new = U.read_file config.system (Fake_system.tests_dir +/ "foo-new.xml") in
 
-    let dryrun_fetcher = Zeroinstall.Fetch.make {config with dry_run = true} trust_db distro download_pool Fake_system.null_ui in
+    let dryrun_fetcher = Zeroinstall.Fetch.make {config with dry_run = true} trust_db distro download_pool Fake_system.null_progress in
     lwt out = Fake_system.capture_stdout_lwt (fun () ->
       dryrun_fetcher#import_feed feed_url foo_signed_xml_new
     ) in

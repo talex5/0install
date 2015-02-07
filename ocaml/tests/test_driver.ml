@@ -50,13 +50,13 @@ let fake_fetcher config handler (distro:Zeroinstall.Distro.distribution) =
 
       method import_feed = failwith "import_feed"
       method download_icon = failwith "download_icon"
-      method ui = (Fake_system.null_ui :> Zeroinstall.Progress.watcher)
+      method ui = (Fake_system.null_progress :> Zeroinstall.Progress.watcher)
     end in
-
+  let ui = new Fake_system.null_ui config (lazy distro) (fun _ -> fetcher) in
   object
     method config = config
     method distro = distro
-    method ui = (Fake_system.null_ui :> Zeroinstall.Ui.ui_handler)
+    method ui = (ui :> Zeroinstall.Ui.ui_handler)
     method fetcher = fetcher
     method make_fetcher _ = fetcher
   end
@@ -142,7 +142,7 @@ let make_driver_test test_elem =
       try
         Fake_system.collect_logging (fun () ->
           let sels =
-            match Lwt_main.run @@ Fake_system.null_ui#run_solver tools `Select_for_run !reqs ~refresh:false with
+            match Lwt_main.run @@ tools#ui#run_solver `Select_for_run !reqs ~refresh:false with
             | `Success sels -> sels
             | `Aborted_by_user -> assert false in
           if !fails then assert_failure "Expected run_solver to fail, but it didn't!";
@@ -218,7 +218,7 @@ let suite = "driver">::: [
     let foo_path = Test_0install.feed_dir +/ "Foo.xml" in
     let reqs = Requirements.({(default_requirements foo_path) with command = None}) in
     let tools = Fake_system.make_tools config in
-    match Fake_system.null_ui#run_solver tools `Select_for_run reqs ~refresh:false |> Lwt_main.run with
+    match tools#ui#run_solver `Select_for_run reqs ~refresh:false |> Lwt_main.run with
     | `Success _ -> ()
     | `Aborted_by_user -> assert false
   );
@@ -245,9 +245,9 @@ let suite = "driver">::: [
         method download_impls = failwith "download_impls"
         method import_feed = failwith "import_feed"
         method download_icon = failwith "download_icon"
-        method ui = (Fake_system.null_ui :> Zeroinstall.Progress.watcher)
+        method ui = (Fake_system.null_progress :> Zeroinstall.Progress.watcher)
       end in
-    let (ready, result, _fp) = Driver.solve_with_downloads config distro fetcher ~watcher:Fake_system.null_ui#watcher reqs ~force:false ~update_local:false |> Lwt_main.run in
+    let (ready, result, _fp) = Driver.solve_with_downloads config distro fetcher ~watcher:Fake_system.null_progress reqs ~force:false ~update_local:false |> Lwt_main.run in
     assert (ready = true);
 
     let get_ids result = Selections.as_xml (Solver.selections result)
@@ -259,7 +259,7 @@ let suite = "driver">::: [
     import "Source.xml";
     import "Compiler.xml";
     let reqs = {reqs with Requirements.source = true; command = None} in
-    let (ready, result, _fp) = Driver.solve_with_downloads config distro fetcher ~watcher:Fake_system.null_ui#watcher reqs ~force:false ~update_local:false |> Lwt_main.run in
+    let (ready, result, _fp) = Driver.solve_with_downloads config distro fetcher ~watcher:Fake_system.null_progress reqs ~force:false ~update_local:false |> Lwt_main.run in
     assert (ready = true);
     Fake_system.equal_str_lists ["sha1=3ce644dc725f1d21cfcf02562c76f375944b266a"; "sha1=345"] @@ get_ids result;
   );

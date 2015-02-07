@@ -6,14 +6,10 @@
 
 open Support.Common
 open Gtk_common
+open Zeroinstall
 
-module Feed_url = Zeroinstall.Feed_url
-module Driver = Zeroinstall.Driver
-module Requirements = Zeroinstall.Requirements
 module U = Support.Utils
-module Progress = Zeroinstall.Progress
-module Downloader = Zeroinstall.Downloader
-module RoleMap = Zeroinstall.Solver.Model.RoleMap
+module RoleMap = Solver.Model.RoleMap
 
 let main_window_help = Help_box.create "0install Help" [
 ("Overview",
@@ -61,7 +57,7 @@ means that it won't need to be downloaded again each time you run the program. T
 class type solver_box =
   object
     method recalculate : unit
-    method result : [`Aborted_by_user | `Success of Zeroinstall.Selections.t ] Lwt.t
+    method result : [`Aborted_by_user | `Success of Selections.t ] Lwt.t
     method ensure_main_window : GWindow.window_skel Lwt.t
     method update : unit
     method update_download_status : n_completed_downloads:int -> size_completed_downloads:Int64.t -> Downloader.download list -> unit
@@ -139,16 +135,15 @@ let make_dialog opt_message mode ~systray =
 
   {dialog; refresh_button; progress_area; stop_button; ok_button; swin; progress_bar; systray_icon}
 
-let run_solver ~show_preferences ~trust_db tools ?test_callback ?(systray=false) mode reqs ~refresh watcher : solver_box =
-  let config = tools#config in
+let run_solver ~show_preferences backend ?test_callback ?(systray=false) mode reqs ~refresh watcher : solver_box =
   let refresh = ref refresh in
   let component_boxes = ref RoleMap.empty in
 
   let report_bug role =
     let run_test = test_callback |> pipe_some (fun test_callback ->
-      Some (fun () -> Zeroinstall.Gui.run_test config tools#distro test_callback watcher#results)
+      Some (fun () -> Gui.run_test backend test_callback watcher#results)
     ) in
-    Bug_report_box.create ?run_test ?last_error:!Alert_box.last_error config ~role ~results:watcher#results in
+    Bug_report_box.create ?run_test ?last_error:!Alert_box.last_error backend ~role ~results:watcher#results in
 
   let need_recalculate = ref (Lwt.wait ()) in
   let recalculate ~force =
@@ -156,8 +151,12 @@ let run_solver ~show_preferences ~trust_db tools ?test_callback ?(systray=false)
     let thread, waker = !need_recalculate in
     if Lwt.state thread = Lwt.Sleep then Lwt.wakeup waker () in
 
-  let fetcher = tools#make_fetcher (watcher :> Zeroinstall.Progress.watcher) in
-  let icon_cache = Icon_cache.create ~fetcher config in
+  let fetcher = Gui.make_fetcher backend (watcher :> Progress.watcher) in
+
+  let icon_cache =
+    let icon_size = 20 in
+    let load_png_icon = Gtk_utils.load_png_icon (Gui.system backend) ~width:icon_size ~height:icon_size in
+    Gui.make_icon_cache backend ~fetcher ~load_png_icon in
 
   let user_response, set_user_response = Lwt.wait () in
 
@@ -205,13 +204,13 @@ let run_solver ~show_preferences ~trust_db tools ?test_callback ?(systray=false)
     match RoleMap.find role !component_boxes with
     | Some box -> box#dialog#present ()
     | None ->
-        let box = Component_box.create tools ~trust_db reqs role ~recalculate ~select_versions_tab ~watcher in
+        let box = Component_box.create backend reqs role ~recalculate ~select_versions_tab ~watcher in
         component_boxes := !component_boxes |> RoleMap.add role box;
         box#dialog#connect#destroy ==> (fun () -> component_boxes := !component_boxes |> RoleMap.remove role);
         box#update (Some role);
         box#dialog#show () in
 
-  let component_tree = Component_tree.build_tree_view config ~parent:dialog ~packing:widgets.swin#add
+  let component_tree = Component_tree.build_tree_view backend ~parent:dialog ~packing:widgets.swin#add
     ~icon_cache ~show_component ~report_bug ~recalculate ~watcher in
   component_tree#set_update_icons !refresh;
 
@@ -234,8 +233,7 @@ let run_solver ~show_preferences ~trust_db tools ?test_callback ?(systray=false)
           match mode with
           | `Select_only -> on_success ()
           | `Download_only | `Select_for_run ->
-              let sels = Zeroinstall.Solver.selections results in
-              match_lwt Driver.download_selections config tools#distro (lazy fetcher) ~include_packages:true ~feed_provider:watcher#feed_provider sels with
+              match_lwt Gui.download_selections backend (lazy fetcher) ~feed_provider:watcher#feed_provider results with
               | `aborted_by_user -> widgets.ok_button#set_active false; Lwt.return ()
               | `success -> on_success ()
         with Safe_exception _ as ex ->
@@ -256,7 +254,7 @@ let run_solver ~show_preferences ~trust_db tools ?test_callback ?(systray=false)
         widgets.refresh_button#misc#set_sensitive false;
         let force = !refresh in
         refresh := false;
-        lwt (ready, _, _) = Driver.solve_with_downloads config tools#distro fetcher ~watcher reqs ~force ~update_local:true in
+        lwt (ready, _, _) = Gui.solve_with_downloads backend fetcher ~watcher reqs ~force in
         if Unix.gettimeofday () < box_open_time +. 1. then widgets.ok_button#grab_default ();
         component_tree#highlight_problems;
 
@@ -287,7 +285,7 @@ let run_solver ~show_preferences ~trust_db tools ?test_callback ?(systray=false)
     | `ok ->
         let (ready, results) = watcher#results in
         assert ready;
-        `Success (Zeroinstall.Solver.selections results) |> Lwt.return
+        `Success (Solver.selections results) |> Lwt.return
     | `aborted_by_user -> `Aborted_by_user |> Lwt.return
   ) in
 
@@ -352,7 +350,7 @@ let run_solver ~show_preferences ~trust_db tools ?test_callback ?(systray=false)
       widgets.ok_button#misc#set_sensitive ready;
 
       let new_roles =
-        Zeroinstall.Solver.Model.raw_selections results
+        Solver.Model.raw_selections results
         |> RoleMap.mapi (fun new_role _impl -> new_role) in
 
       !component_boxes |> RoleMap.iter (fun old_role box ->

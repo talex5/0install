@@ -14,7 +14,7 @@ module JC = Zeroinstall.Json_connection
 module Ui = Zeroinstall.Ui
 module Progress = Zeroinstall.Progress
 
-let make_no_gui (connection:JC.json_connection) : Ui.ui_handler =
+let make_no_gui config distro make_fetcher (connection:JC.json_connection) : Ui.ui_handler =
   let json_of_votes =
     List.map (function
       | Progress.Good, msg -> `List [`String "good"; `String msg]
@@ -25,7 +25,7 @@ let make_no_gui (connection:JC.json_connection) : Ui.ui_handler =
     (* There's more stuff we could expose to clients easily; see Zeroinstall.Progress.watcher for a list of things
      * that could be overridden. *)
     object
-      inherit Zeroinstall.Console.batch_ui
+      inherit Zeroinstall.Console.batch_ui config distro make_fetcher
 
       method! confirm_keys feed_url infos =
         let pending_tasks = ref [] in
@@ -61,7 +61,9 @@ let make_no_gui (connection:JC.json_connection) : Ui.ui_handler =
 
   (ui :> Zeroinstall.Ui.ui_handler)
 
-let make_ui config connection use_gui : Zeroinstall.Ui.ui_handler =
+let make_ui tools connection use_gui : Zeroinstall.Ui.ui_handler =
+  let config = tools#config in
+  let make_no_gui = make_no_gui config (lazy tools#distro) tools#make_fetcher in
   let use_gui =
     match use_gui, config.dry_run with
     | Yes, true -> raise_safe "Can't use GUI with --dry-run"
@@ -71,7 +73,7 @@ let make_ui config connection use_gui : Zeroinstall.Ui.ui_handler =
   match use_gui with
   | No -> make_no_gui connection
   | Yes | Maybe ->
-      match Zeroinstall.Gui.try_get_gui config ~use_gui with
+      match Zeroinstall.Gui.try_get_gui config (lazy tools#distro) tools#make_fetcher (lazy tools#trust_db) ~use_gui with
       | Some gui -> gui
       | None -> make_no_gui connection
 
@@ -116,7 +118,7 @@ let select options (ui:Zeroinstall.Ui.ui_handler) requirements refresh =
     `WithXML (json, Zeroinstall.Selections.as_xml sels) |> Lwt.return in
 
   let select_with_refresh refresh =
-    match_lwt ui#run_solver options.tools `Select_only requirements ~refresh with
+    match_lwt ui#run_solver `Select_only requirements ~refresh with
     | `Success sels -> success ~sels ~stale:false
     | `Aborted_by_user -> `List [`String "aborted-by-user"] |> Lwt.return in
 
@@ -163,7 +165,7 @@ let handle options flags args =
 
       let handler, set_handler = Lwt.wait () in
       let connection = new JC.json_connection ~from_peer:Lwt_io.stdin ~to_peer:Lwt_io.stdout handler in
-      let ui = make_ui options.config connection options.tools#use_gui in
+      let ui = make_ui options.tools connection options.tools#use_gui in
 
       let handle_request = handle_request options ui in
       let handle_request =

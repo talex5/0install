@@ -48,8 +48,12 @@ let remove_cached config selections_path =
 
 let fake_gui =
   object (_ : #Zeroinstall.Ui.ui_handler)
-    inherit Fake_system.null_ui
-    method! run_solver = raise Open_gui
+    method show_preferences = failwith "show_preferences"
+    method open_app_list_box = failwith "open_app_list_box"
+    method open_add_box = failwith "open_add_box"
+    method open_cache_explorer = failwith "open_cache_explorer"
+    method watcher = failwith "watcher"
+    method run_solver = raise Open_gui
   end
 
 let install_interceptor system checked_for_gui =
@@ -303,7 +307,7 @@ let suite = "download">::: [
     let deb = Zeroinstall.Distro_impls.Debian.debian_distribution ~status_file:(dpkgdir +/ "status") config in
 
     Fake_system.fake_log#reset;
-    Lwt_main.run @@ deb#check_for_candidates ~ui:Fake_system.null_ui feed;
+    Lwt_main.run @@ deb#check_for_candidates ~ui:Fake_system.null_progress feed;
     begin match Test_distro.to_impl_list @@ deb#get_impls_for_feed feed with
     | [_impl1; _impl2] -> ()
     | items -> raise_safe "Got %d!" (List.length items) end;

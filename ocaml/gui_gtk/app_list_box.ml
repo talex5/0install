@@ -15,103 +15,25 @@ module FC = Zeroinstall.Feed_cache
 module Feed_url = Zeroinstall.Feed_url
 module Basedir = Support.Basedir
 
-exception Found
-
-(** Search through the configured XDG datadirs looking for .desktop files created by us. *)
-let discover_existing_apps config =
-  let re_exec = Str.regexp "^Exec=0launch \\(-- \\)?\\([^ ]*\\) " in
-  let system = config.system in
-  let already_installed = ref [] in
-  config.basedirs.Basedir.data |> List.iter (fun data_path ->
-    let apps_dir = data_path +/ "applications" in
-    if system#file_exists apps_dir then (
-      match system#readdir apps_dir with
-      | Problem ex -> log_warning ~ex "Failed to scan directory '%s'" apps_dir
-      | Success items ->
-          items |> Array.iter (fun desktop_file ->
-            if U.starts_with desktop_file "zeroinstall-" && U.ends_with desktop_file ".desktop" then (
-              let full = apps_dir +/ desktop_file in
-              try
-                full |> system#with_open_in [Open_rdonly] (fun ch ->
-                  while true do
-                    let line = input_line ch in
-                    if Str.string_match re_exec line 0 then (
-                      let uri = Str.matched_group 2 line in
-                      let url = Feed_url.master_feed_of_iface uri in
-                      let name =
-                        try
-                          match FC.get_cached_feed config url with
-                          | Some feed -> feed.F.name
-                          | None -> Filename.basename uri
-                        with Safe_exception _ ->
-                          Filename.basename uri in
-                      already_installed := (name, full, uri) :: !already_installed;
-                      raise Found
-                    )
-                  done
-                )
-              with
-              | End_of_file -> log_info "Failed to find Exec line in %s" full
-              | Found -> ()
-              | ex -> log_warning ~ex "Failed to load .desktop file %s" full
-            )
-          )
-    )
-  );
-  !already_installed
-
 let by_name_ignore_case (n1, p1, u1) (n2, p2, u2) =
   let r = String.compare (String.lowercase n1) (String.lowercase n2) in
   if r <> 0 then r
   else compare (p1, u1) (p2, u2)
 
-(** Use [xdg-open] to show the help files for this implementation. *)
-let show_help config sel =
-  let system = config.system in
-  let help_dir = Element.doc_dir sel in
-  let id = Element.id sel in
-
-  let path =
-    if U.starts_with id "package:" then (
-      match help_dir with
-      | None -> raise_safe "No doc-dir specified for package implementation"
-      | Some help_dir ->
-          if Filename.is_relative help_dir then
-            raise_safe "Package doc-dir must be absolute! (got '%s')" help_dir
-          else
-            help_dir
-    ) else (
-      let path = Selections.get_path system config.stores sel |? lazy (raise_safe "BUG: not cached!") in
-      match help_dir with
-      | Some help_dir -> path +/ help_dir
-      | None ->
-          match Element.get_command "run" sel with
-          | None -> path
-          | Some run ->
-              match Element.path run with
-              | None -> path
-              | Some main ->
-                  (* Hack for ROX applications. They should be updated to set doc-dir. *)
-                  let help_dir = path +/ (Filename.dirname main) +/ "Help" in
-                  if U.is_dir system help_dir then help_dir
-                  else path
-    ) in
-  U.xdg_open_dir ~exec:false system path
-
-let get_selections tools ~(gui:Ui.ui_handler) uri =
+let get_selections backend ~(gui:Ui.ui_handler) uri =
   let reqs = Requirements.default_requirements uri in
-  match Driver.quick_solve tools reqs with
+  match Gui.quick_solve backend reqs with
   | Some sels -> Lwt.return (`Success sels)
   | None ->
       (* Slow path: program isn't cached yet *)
-      gui#run_solver tools `Download_only reqs ~refresh:false
+      gui#run_solver `Download_only reqs ~refresh:false
 
-let show_help_for_iface tools ~gui uri : unit Lwt.t =
-  match_lwt get_selections tools ~gui uri with
+let show_help_for_iface backend ~gui uri : unit Lwt.t =
+  match_lwt get_selections backend ~gui uri with
   | `Aborted_by_user -> Lwt.return ()
   | `Success sels ->
       let sel = Selections.(get_selected_ex {iface = uri; source = false} sels) in
-      show_help tools#config sel;
+      Gui.show_help_exn backend sel;
       Lwt.return ()
 
 let confirm_deletion ~parent name =
@@ -136,45 +58,21 @@ let confirm_deletion ~parent name =
   box#show ();
   result
 
-(** If [feed] <needs-terminal> then find one and add it to the start of args. *)
-let maybe_with_terminal system feed args =
-  if F.needs_terminal feed then (
-    if (system#platform).Platform.os = "MacOSX" then (
-      (* This is probably wrong, or at least inefficient (we ignore [args] and invoke 0launch again).
-       * But I don't know how to make the escaping right - someone on OS X should check it... *)
-      let osascript = U.find_in_path_ex system "osascript" in
-      let script = "0launch -- " ^ (Feed_url.format_url feed.F.url) in
-      [osascript; "-e"; "tell app \"Terminal\""; "-e"; "activate"; "-e"; "do script \"" ^ script ^ "\""; "-e"; "end tell"]
-    ) else (
-      let terminal_args =
-        ["x-terminal-emulator"; "xterm"; "gnome-terminal"; "rxvt"; "konsole"] |> U.first_match (fun terminal ->
-          U.find_in_path system terminal |> pipe_some (fun path ->
-            if terminal = "gnome-terminal" then Some [path; "-x"]
-            else Some [path; "-e"]
-          )
-        ) |? lazy (raise_safe "Can't find a suitable terminal emulator") in
-      terminal_args @ args
-    )
-  ) else args
-
-let run config dialog tools gui uri =
+let run backend dialog gui uri =
   Gtk_utils.async ~parent:dialog (fun () ->
     Gdk.Window.set_cursor dialog#misc#window (Lazy.force Gtk_utils.busy_cursor);
     try_lwt
-      match_lwt get_selections tools ~gui uri with
+      match_lwt get_selections backend ~gui uri with
       | `Aborted_by_user -> Lwt.return ()
       | `Success sels ->
-          let feed_url = Feed_url.master_feed_of_iface uri in
-          let feed = FC.get_cached_feed config feed_url |? lazy (raise_safe "BUG: feed still not cached! %s" uri) in
-          let exec args ~env = config.system#spawn_detach ~env (maybe_with_terminal tools#config.system feed args) in
-          Exec.execute_selections config ~exec sels [];
+          Gui.spawn backend sels;
           Lwt_unix.sleep 0.5
     finally
       Gdk.Window.set_cursor dialog#misc#window (Lazy.force Gtk_utils.default_cursor);
       Lwt.return ()
   )
 
-let create config ~gui ~tools ~add_app =
+let create backend ~gui ~add_app =
   let finished, set_finished = Lwt.wait () in
 
   let dialog = GWindow.dialog ~title:"0install Applications" () in
@@ -228,19 +126,19 @@ let create config ~gui ~tools ~add_app =
   let delete_item = GMenu.menu_item ~packing:menu#add ~label:"Delete" () in
 
   run_item#connect#activate ==> (fun () ->
-    run config dialog tools gui (!menu_iface |? lazy (raise_safe "BUG: no selected item!"))
+    run backend dialog gui (!menu_iface |? lazy (raise_safe "BUG: no selected item!"))
   );
 
   help_item#connect#activate ==> (fun () ->
     let uri = !menu_iface |? lazy (raise_safe "BUG: no selected item!") in
-    Gtk_utils.async ~parent:dialog (fun () -> show_help_for_iface tools ~gui uri)
+    Gtk_utils.async ~parent:dialog (fun () -> show_help_for_iface backend ~gui uri)
   );
 
   edit_item#connect#activate ==> (fun () ->
     let uri = !menu_iface |? lazy (raise_safe "BUG: no selected item!") in
     let reqs = Requirements.default_requirements uri in
     Gtk_utils.async ~parent:dialog (fun () ->
-      lwt _ = gui#run_solver tools `Download_only reqs ~refresh:false in
+      lwt _ = gui#run_solver `Download_only reqs ~refresh:false in
       Lwt.return ()
     )
   );
@@ -258,7 +156,7 @@ let create config ~gui ~tools ~add_app =
             | `delete ->
                 log_info "rm %s" path;
                 begin
-                  try config.system#unlink path
+                  try (Gui.system backend)#unlink path
                   with Unix.Unix_error (Unix.EACCES, _, _) ->
                     raise_safe "Permission denied. You may be able to remove the entry manually with:\n\
                                 sudo rm '%s'" path
@@ -281,7 +179,7 @@ let create config ~gui ~tools ~add_app =
     match GdkEvent.get_type bev, B.button bev, path with
     | `TWO_BUTTON_PRESS, 1, Some path ->
         let row = model#get_iter path in
-        run config dialog tools gui (model#get ~row ~column:uri_col);
+        run backend dialog gui (model#get ~row ~column:uri_col);
         true
     | `BUTTON_PRESS, 3, Some path ->
         view#select_path path;
@@ -302,7 +200,7 @@ let create config ~gui ~tools ~add_app =
   (* Populate model *)
   let populate () =
     model#clear ();
-    discover_existing_apps config
+    Gui.discover_existing_apps backend
     |> List.sort by_name_ignore_case
     |> List.iter (fun (name, path, uri) ->
       let row = model#append () in
@@ -311,6 +209,7 @@ let create config ~gui ~tools ~add_app =
       model#set ~row ~column:path_col path;
       let url = Feed_url.master_feed_of_iface uri in
 
+      let config = Gui.config backend in
       FC.get_cached_icon_path config url
       |> pipe_some (Gtk_utils.load_png_icon config.system ~width ~height)
       |> default default_icon
@@ -336,7 +235,7 @@ let create config ~gui ~tools ~add_app =
 
   dialog#connect#response ==> (function
     | `DELETE_EVENT | `CLOSE -> dialog#destroy (); Lwt.wakeup set_finished ()
-    | `SHOW_CACHE -> Gtk_utils.async (fun () -> Cache_explorer_box.open_cache_explorer config)
+    | `SHOW_CACHE -> Gtk_utils.async (fun () -> Cache_explorer_box.open_cache_explorer backend)
     | `ADD -> add_and_repopulate ""
   );
 
