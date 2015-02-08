@@ -739,3 +739,5 @@ let spawn t sels =
   let feed = Feed_cache.get_cached_feed t.config feed_url |? lazy (raise_safe "BUG: feed still not cached! %s" uri) in
   let exec args ~env = t.config.system#spawn_detach ~env (maybe_with_terminal t.config.system feed args) in
   Exec.execute_selections t.config ~exec sels []
+
+let impl_added_to_store_event t = t.config.impl_added_to_store_event

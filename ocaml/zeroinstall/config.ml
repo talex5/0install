@@ -81,10 +81,12 @@ let get_default_config system path_to_prog =
     ) in
 
   let basedirs = Support.Basedir.get_default_config system in
+  let impl_added_to_store_event, impl_added_to_store_notify = React.E.create () in
 
   let config = {
     basedirs;
     stores = Stores.get_default_stores system basedirs;
+    impl_added_to_store_event; impl_added_to_store_notify;
     extra_stores = [];
     abspath_0install;
     freshness = Some (30. *. days);

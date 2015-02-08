@@ -55,7 +55,7 @@ let walk_tree (model:GTree.tree_store) ~start ~stop fn =
 
 module SolverTree = Tree.Make(Solver.Model)
 
-let build_tree_view backend ~parent ~packing ~icon_cache ~show_component ~report_bug ~recalculate ~watcher =
+let build_tree_view backend ~parent ~packing ~icon_cache ~show_component ~report_bug ~recalculate ~original_selections result_signal =
   (* Model *)
   let columns = new GTree.column_list in
   let implementation = columns#add Gobject.Data.caml in
@@ -102,6 +102,9 @@ let build_tree_view backend ~parent ~packing ~icon_cache ~show_component ~report
 
   view#set_enable_search true;
 
+  let current_results () = fst (React.S.value result_signal) in
+  let current_feed_provider () = snd (React.S.value result_signal) in
+
   (* Tooltips *)
   let get_tooltip row col =
     match get model row component_role with
@@ -111,7 +114,7 @@ let build_tree_view backend ~parent ~packing ~icon_cache ~show_component ~report
         if col = component_vc#get_oid then (
           Printf.sprintf "Full name: %s" iface
         ) else if col = summary_vc#get_oid then (
-          match watcher#feed_provider#get_feed (Feed_url.master_feed_of_iface iface) with
+          match (current_feed_provider ())#get_feed (Feed_url.master_feed_of_iface iface) with
           | None -> "-"
           | Some (main_feed, _overrides) ->
               match Gui.get_description backend main_feed with
@@ -124,7 +127,7 @@ let build_tree_view backend ~parent ~packing ~icon_cache ~show_component ~report
           | Some stability_str, Some impl, Some version ->
               if col = version_vc#get_oid then (
                 let current = Printf.sprintf "Currently preferred version: %s (%s)" version stability_str in
-                let prev_version = watcher#original_selections
+                let prev_version = original_selections
                   |> pipe_some (Selections.get_selected {Selections.iface; source = role.Solver.source})
                   |> pipe_some (fun sel -> Element.version_opt sel) in
                 match prev_version with
@@ -155,7 +158,7 @@ let build_tree_view backend ~parent ~packing ~icon_cache ~show_component ~report
   let show_menu row bev =
     let role = model#get ~row ~column:component_role in
     let iface = role.Solver.iface in
-    let have_source = Gui.have_source_for watcher#feed_provider iface in
+    let have_source = Gui.have_source_for (current_feed_provider ()) iface in
     let menu = GMenu.menu () in
     let packing = menu#add in
 
@@ -165,13 +168,13 @@ let build_tree_view backend ~parent ~packing ~icon_cache ~show_component ~report
     show_versions#connect#activate ==> (fun () -> show_component role ~select_versions_tab:true);
 
     let report_a_bug = GMenu.menu_item ~packing ~label:"Report a Bug..." () in
-    report_a_bug#connect#activate ==> (fun () -> report_bug role);
+    report_a_bug#connect#activate ==> (fun () -> report_bug role (current_results ()));
     let compile_item = GMenu.menu_item ~packing ~label:"Compile" () in
 
     if have_source then (
       let compile ~autocompile () =
         Gtk_utils.async ~parent (fun () ->
-          lwt () = Gui.compile backend watcher#feed_provider iface ~autocompile in
+          lwt () = Gui.compile backend (current_feed_provider ()) iface ~autocompile in
           recalculate ~force:false;
           Lwt.return ()
         ) in
@@ -212,8 +215,8 @@ let build_tree_view backend ~parent ~packing ~icon_cache ~show_component ~report
   let default_icon = view#misc#render_icon ~size:`SMALL_TOOLBAR `EXECUTE in
 
   let rec update () =
-    let (_ready, new_results) = watcher#results in
-    let feed_provider = watcher#feed_provider in
+    let (_ready, new_results) = current_results () in
+    let feed_provider = current_feed_provider () in
 
     let rec process_tree parent (role, details) =
       let uri = role.Solver.iface in
@@ -253,7 +256,7 @@ let build_tree_view backend ~parent ~packing ~icon_cache ~show_component ~report
             match Gui.get_user_stability backend impl with
             | Some s -> String.uppercase (Impl.format_stability s)
             | None -> Impl.get_attr_ex FeedAttr.stability impl in
-          let prev_version = watcher#original_selections
+          let prev_version = original_selections
             |> pipe_some (Selections.get_selected {Selections.iface = uri; source = role.Solver.source})
             |> pipe_some (fun old_sel ->
               let old_version = Element.version old_sel in
@@ -287,9 +290,12 @@ let build_tree_view backend ~parent ~packing ~icon_cache ~show_component ~report
 
   update ();
 
+  let keep_me = React.E.map update (Gui.impl_added_to_store_event backend) in
+
   object
     method set_update_icons value = icon_cache#set_update_icons value
     method update = update ()
+    method _keep_me = keep_me   (* Prevent GC *)
 
     method highlight_problems =
       (* Called when the solve finishes. Highlight any missing implementations. *)

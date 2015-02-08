@@ -211,8 +211,6 @@ class console_ui config distro make_fetcher =
         | `cancel -> Lwt.return []
       )
 
-    method impl_added_to_store = ()
-
     method watcher = (self :> Progress.watcher)
 
     method show_preferences = None

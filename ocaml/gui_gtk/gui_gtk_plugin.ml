@@ -36,6 +36,7 @@ let make_gtk_ui backend =
       let watcher = Gui_progress.make_watcher solver_promise backend reqs in
       let show_preferences () = self#show_preferences_internal in
       let box = Solver_box.run_solver ~show_preferences backend ?test_callback ?systray mode reqs ~refresh watcher in
+      let box = (box :> Solver_box.solver_box) in
       Lwt.wakeup set_solver box;
       solver_boxes <- box :: solver_boxes;
       try_lwt

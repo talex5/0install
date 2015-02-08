@@ -472,7 +472,6 @@ class fetcher config (trust_db:Trust.trust_db) (distro:Distro.distribution) (dow
         ) in
 
         lwt () = Stores.check_manifest_and_rename {config with system = system#bypass_dryrun} required_digest tmpdir in
-        ui#impl_added_to_store; (* Notify the GUI *)
         need_rm_tmpdir := false;
         Lwt.return `success
       with ex ->

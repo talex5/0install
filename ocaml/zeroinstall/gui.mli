@@ -141,3 +141,6 @@ val show_help_exn : t -> Selections.selection -> unit
 (** Execute the selections in a sub-process and return without waiting.
  * The selections must already be cached. *)
 val spawn : t -> Selections.t -> unit
+
+(** An event that fires whenever a new implementation is added to the cache. *)
+val impl_added_to_store_event : t -> unit React.E.t

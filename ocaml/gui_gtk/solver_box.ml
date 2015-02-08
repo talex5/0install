@@ -61,9 +61,7 @@ class type solver_box =
     method recalculate : unit
     method result : [`Aborted_by_user | `Success of Selections.t ] Lwt.t
     method ensure_main_window : GWindow.window_skel Lwt.t
-    method update : unit
     method update_download_status : n_completed_downloads:int -> size_completed_downloads:Int64.t -> Downloader.download list -> unit
-    method impl_added_to_store : unit
     method report_error : exn -> unit
   end
 
@@ -137,15 +135,15 @@ let make_dialog opt_message mode ~systray =
 
   {dialog; refresh_button; progress_area; stop_button; ok_button; swin; progress_bar; systray_icon}
 
-let run_solver ~show_preferences backend ?test_callback ?(systray=false) mode reqs ~refresh watcher : solver_box =
+let run_solver ~show_preferences backend ?test_callback ?(systray=false) mode reqs ~refresh watcher : #solver_box =
   let refresh = ref refresh in
   let component_boxes = ref RoleMap.empty in
 
-  let report_bug role =
+  let report_bug role results =
     let run_test = test_callback |> pipe_some (fun test_callback ->
-      Some (fun () -> Gui.run_test backend test_callback watcher#results)
+      Some (fun () -> Gui.run_test backend test_callback results)
     ) in
-    Bug_report_box.create ?run_test ?last_error:!Alert_box.last_error backend ~role ~results:watcher#results in
+    Bug_report_box.create ?run_test ?last_error:!Alert_box.last_error backend ~role ~results in
 
   let need_recalculate = ref (Lwt.wait ()) in
   let recalculate ~force =
@@ -212,8 +210,11 @@ let run_solver ~show_preferences backend ?test_callback ?(systray=false) mode re
         box#update (Some role);
         box#dialog#show () in
 
-  let component_tree = Component_tree.build_tree_view backend ~parent:dialog ~packing:widgets.swin#add
-    ~icon_cache ~show_component ~report_bug ~recalculate ~watcher in
+  let component_tree = Component_tree.build_tree_view backend
+    ~parent:dialog ~packing:widgets.swin#add
+    ~icon_cache ~show_component ~report_bug ~recalculate
+    ~original_selections:watcher#original_selections
+    watcher#result_signal in
   component_tree#set_update_icons !refresh;
 
   (* Handling the Select/Download/Run toggle button *)
@@ -291,6 +292,21 @@ let run_solver ~show_preferences backend ?test_callback ?(systray=false) mode re
     | `aborted_by_user -> `Aborted_by_user |> Lwt.return
   ) in
 
+  let keep_updating : unit React.S.t =
+    watcher#result_signal |> React.S.map (fun ((ready, results), _feed_provider) ->
+      widgets.ok_button#misc#set_sensitive ready;
+
+      let new_roles =
+        Solver.Model.raw_selections results
+        |> RoleMap.mapi (fun new_role _impl -> new_role) in
+
+      !component_boxes |> RoleMap.iter (fun old_role box ->
+        RoleMap.find old_role new_roles |> box#update
+      );
+
+      component_tree#update
+    ) in
+
   object
     method recalculate = recalculate ~force:false
     method result = Lazy.force result
@@ -345,21 +361,7 @@ let run_solver ~show_preferences backend ?test_callback ?(systray=false) mode re
         );
       )
 
-    method impl_added_to_store = component_tree#update
-
-    method update =
-      let (ready, results) = watcher#results in
-      widgets.ok_button#misc#set_sensitive ready;
-
-      let new_roles =
-        Solver.Model.raw_selections results
-        |> RoleMap.mapi (fun new_role _impl -> new_role) in
-
-      !component_boxes |> RoleMap.iter (fun old_role box ->
-        RoleMap.find old_role new_roles |> box#update
-      );
-
-      component_tree#update
-
     method report_error ex = report_error ex
+
+    method _keep_updating = keep_updating  (* Never called; just prevents GC *)
   end

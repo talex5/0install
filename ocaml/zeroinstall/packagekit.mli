@@ -18,7 +18,6 @@ class type ui =
   object
     method monitor : Downloader.download -> unit
     method confirm : string -> [`ok | `cancel] Lwt.t
-    method impl_added_to_store : unit
   end
 
 type packagekit = <

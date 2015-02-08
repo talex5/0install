@@ -401,7 +401,6 @@ class null_progress =
     method monitor _ = ()
     method confirm_keys feed_url _xml = raise_safe "confirm_keys: %s" (Zeroinstall.Feed_url.format_url feed_url)
     method confirm msg = raise_safe "confirm: %s" msg
-    method impl_added_to_store = ()
   end
 
 class null_ui config distro make_fetcher =

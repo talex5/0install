@@ -212,8 +212,6 @@ let handle_bg options flags args =
       method confirm msg =
         need_gui := true;
         raise_safe "need to switch to GUI to confirm distro package install: %s" msg
-
-      method impl_added_to_store = ()
     end in
 
   match args with

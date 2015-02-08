@@ -8,15 +8,20 @@ open Support.Common
 open Gtk_common
 open Zeroinstall
 
+let never_equal _ _  = false
+
 let make_watcher solver_box backend reqs =
   let config = Gui.config backend in
   let distro = Gui.distro backend in
-  let feed_provider = ref (new Feed_provider_impl.feed_provider config distro) in
-  let original_solve = Solver.solve_for config !feed_provider reqs in
+  let original_feed_provider = new Feed_provider_impl.feed_provider config distro in
+  let original_solve = Solver.solve_for config original_feed_provider reqs in
   let original_selections =
     match original_solve with
     | (false, _) -> None
     | (true, results) -> Some (Solver.selections results) in
+
+  let results, set_results =
+    React.S.create ~eq:never_equal (original_solve, original_feed_provider) in
 
   object (_ : #Progress.watcher)
     val mutable n_completed_downloads = 0
@@ -24,21 +29,18 @@ let make_watcher solver_box backend reqs =
     val mutable downloads = []
     val mutable pulse = None
 
-    val mutable results = original_solve
+    method feed_provider =
+      snd (React.S.value results)
 
-    method feed_provider = !feed_provider
-    method results = results
+    method results =
+      fst (React.S.value results)
+
+    method result_signal = results
+
     method original_selections = original_selections
 
-    method update (new_results, new_fp) =
-      feed_provider := new_fp;
-      results <- new_results;
-
-      Gtk_utils.async (fun () ->
-        lwt box = solver_box in
-        box#update;
-        Lwt.return ()
-      )
+    method update results =
+      set_results results
 
     method report feed_url msg =
       let msg = Printf.sprintf "Feed '%s': %s" (Feed_url.format_url feed_url) msg in
@@ -83,13 +85,6 @@ let make_watcher solver_box backend reqs =
             size_completed_downloads <- 0L;
             Lwt.return ()
         )
-      )
-
-    method impl_added_to_store =
-      Gtk_utils.async (fun () ->
-        lwt box = solver_box in
-        box#impl_added_to_store;
-        Lwt.return ()
       )
 
     method confirm_keys feed_url infos =

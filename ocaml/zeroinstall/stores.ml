@@ -172,7 +172,8 @@ let add_to_store config store digest tmpdir =
     config.system#chmod tmpdir 0o755;
     try
       config.system#rename tmpdir path;
-      config.system#chmod path 0o555
+      config.system#chmod path 0o555;
+      config.impl_added_to_store_notify ();
     with Unix.Unix_error (Unix.EXDEV, "rename", _) ->
       log_info "Target is on a different filesystem so can't rename; copy and delete instead";
       let target_tmpdir = U.make_tmp_dir config.system ~mode:0o700 store in
@@ -214,6 +215,7 @@ let add_with_helper config required_digest tmpdir =
             try
               Support.System.check_exit_status status;
               log_info "Added succcessfully using helper.";
+              config.impl_added_to_store_notify ();
               Lwt.return `success
             with Safe_exception _ as ex ->
               log_warning ~ex "Error running %s" helper;

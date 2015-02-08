@@ -18,6 +18,12 @@ type network_use = Full_network | Minimal_network | Offline
 type config = {
   basedirs: Support.Basedir.basedirs;
   mutable stores: filepath list;
+
+  (** Called each time a new implementation is added to the cache.
+   * This is used by the GUI to refresh its display. *)
+  impl_added_to_store_notify : unit -> unit;
+  impl_added_to_store_event : unit React.E.t;
+
   mutable extra_stores: filepath list;      (* (subset of stores; passed to Python slave with --with-store) *)
   abspath_0install: filepath;
 

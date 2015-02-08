@@ -26,8 +26,4 @@ class type watcher =
 
     (** Display a confirmation request *)
     method confirm : string -> [`ok | `cancel] Lwt.t
-
-    (** Called each time a new implementation is added to the cache.
-     * This is used by the GUI to refresh its display. *)
-    method impl_added_to_store : unit
   end
