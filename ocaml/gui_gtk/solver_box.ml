@@ -11,6 +11,8 @@ open Zeroinstall
 module U = Support.Utils
 module RoleMap = Solver.Model.RoleMap
 
+let (++) = Int64.add
+
 let main_window_help = Help_box.create "0install Help" [
 ("Overview",
 "A program is made up of many different components, typically written by different \
@@ -315,31 +317,31 @@ let run_solver ~show_preferences backend ?test_callback ?(systray=false) mode re
         );
 
         (* Calculate stats: completed downloads + downloads in progress *)
-        let total_so_far = ref size_completed_downloads in
-        let total_expected = ref size_completed_downloads in
+        let sum_so_far = ref size_completed_downloads in
+        let sum_expected = ref size_completed_downloads in
         let n_downloads = ref n_completed_downloads in
         let any_known = ref false in
 
         downloads |> List.iter (fun dl ->
-          let (so_far, expected, _finished) = Lwt_react.S.value dl.Downloader.progress in
-          total_so_far := Int64.add !total_so_far so_far;
-          if expected <> None then any_known := true;
+          let {Downloader.bytes_so_far; total_expected; state = _} = Lwt_react.S.value dl.Downloader.progress in
+          sum_so_far := !sum_so_far ++ bytes_so_far;
+          if total_expected <> None then any_known := true;
           (* Guess about 4K for feeds/icons *)
-          let expected = expected |? lazy (if Int64.compare so_far 4096L > 0 then so_far else 4096L) in
-          total_expected := Int64.add !total_expected expected;
+          let expected = total_expected |? lazy (if Int64.compare bytes_so_far 4096L > 0 then bytes_so_far else 4096L) in
+          sum_expected := !sum_expected ++ expected;
           incr n_downloads
         );
 
-        let progress_text = Printf.sprintf "%s / %s" (U.format_size !total_so_far) (U.format_size !total_expected) in
+        let progress_text = Printf.sprintf "%s / %s" (U.format_size !sum_so_far) (U.format_size !sum_expected) in
         if !n_downloads = 1 then
           widgets.progress_bar#set_text (Printf.sprintf "Downloading one file (%s)" progress_text)
         else
           widgets.progress_bar#set_text (Printf.sprintf "Downloading %d files (%s)" !n_downloads progress_text);
 
-        if !total_expected = 0L || (!n_downloads < 2 && not !any_known) then (
+        if !sum_expected = 0L || (!n_downloads < 2 && not !any_known) then (
           widgets.progress_bar#pulse ()
         ) else (
-          widgets.progress_bar#set_fraction (Int64.to_float !total_so_far /. Int64.to_float !total_expected)
+          widgets.progress_bar#set_fraction (Int64.to_float !sum_so_far /. Int64.to_float !sum_expected)
         );
       )
 

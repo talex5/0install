@@ -61,9 +61,9 @@ let make_watcher solver_box backend reqs =
                 if Downloader.is_in_progress dl then true
                 else (
                   log_debug "stop_monitoring %s" dl.Downloader.url;
-                  let (bytes, _, _) = Lwt_react.S.value dl.Downloader.progress in
+                  let progress = Lwt_react.S.value dl.Downloader.progress in
                   n_completed_downloads <- n_completed_downloads + 1;
-                  size_completed_downloads <- Int64.add size_completed_downloads bytes;
+                  size_completed_downloads <- Int64.add size_completed_downloads progress.Downloader.bytes_so_far;
                   false
                 )
               );

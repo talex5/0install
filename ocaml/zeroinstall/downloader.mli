@@ -11,13 +11,16 @@ type download_result =
 
 exception Unmodified
 
-(* (bytes so far, total expected, finished) *)
-type progress = (Int64.t * Int64.t option * bool) Lwt_react.signal
+type progress = {
+  bytes_so_far : Int64.t;
+  total_expected : Int64.t option;
+  state : [`Active | `Finished]
+}
 
 type download = {
   cancel : unit -> unit Lwt.t;
   url : string;
-  progress : progress;    (* Must keep a reference to this; if it gets GC'd then updates stop. *)
+  progress : progress Lwt_react.signal;    (* Must keep a reference to this; if it gets GC'd then updates stop. *)
   hint : string option;
 }
 

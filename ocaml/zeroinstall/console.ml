@@ -47,10 +47,10 @@ class console_ui config distro make_fetcher =
     old_downloads |> List.iter (fun dl ->
       if Downloader.is_in_progress dl then (
         downloads := dl :: !downloads;
-        let (current_sofar, _, _) = Lwt_react.S.value dl.Downloader.progress in
+        let progress = Lwt_react.S.value dl.Downloader.progress in
         match !best with
-        | Some (best_sofar, _best_dl) when Int64.compare current_sofar best_sofar < 0 -> ()
-        | _ -> best := Some (current_sofar, dl)
+        | Some (best_sofar, _best_dl) when Int64.compare progress.Downloader.bytes_so_far best_sofar < 0 -> ()
+        | _ -> best := Some (progress.Downloader.bytes_so_far, dl)
       )
     );
     !best |> pipe_some (fun x -> Some (snd x)) in
@@ -79,11 +79,11 @@ class console_ui config distro make_fetcher =
               current_favourite := best;
               next_switch_time := now +. 1.0;
             );
-            let (sofar, total, _finished) = Lwt_react.S.value dl.Downloader.progress in
+            let {Downloader.bytes_so_far; total_expected; state = _} = Lwt_react.S.value dl.Downloader.progress in
             let progress_str =
-              match total with
-              | None -> Printf.sprintf "%6s / unknown" (Int64.to_string sofar)  (* (could be bytes or percent) *)
-              | Some total -> Printf.sprintf "%s / %s" (Int64.to_string sofar) (U.format_size total) in
+              match total_expected with
+              | None -> Printf.sprintf "%6s / unknown" (Int64.to_string bytes_so_far)  (* (could be bytes or percent) *)
+              | Some total -> Printf.sprintf "%s / %s" (Int64.to_string bytes_so_far) (U.format_size total) in
             clear ();
             Support.Logging.clear_fn := Some clear;
             if n_downloads = 1 then

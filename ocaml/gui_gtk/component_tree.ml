@@ -17,6 +17,7 @@ module U = Support.Utils
 module Downloader = Zeroinstall.Downloader
 
 let icon_size = 20
+let (++) = Int64.add
 
 let get (model:#GTree.model) row column =
   try Some (model#get ~row ~column)
@@ -26,15 +27,15 @@ let get (model:#GTree.model) row column =
 let rec count_downloads = function
   | [] -> (0L, None)
   | (x::xs) ->
-      let so_far, expected, _finished = Lwt_react.S.value x.Downloader.progress in   (* TODO: remove finished? *)
+      let progress = Lwt_react.S.value x.Downloader.progress in   (* TODO: remove finished? *)
       let so_far_rest, expected_rest = count_downloads xs in
       (* This seems a bit odd, but it's what the Python does. *)
       let expected_total =
-        match expected, expected_rest with
+        match progress.Downloader.total_expected, expected_rest with
         | None, _ -> expected_rest
         | Some _ as extra, None -> extra
-        | Some extra, Some rest -> Some (Int64.add extra rest) in
-      (Int64.add so_far so_far_rest, expected_total)
+        | Some extra, Some rest -> Some (extra ++ rest) in
+      (progress.Downloader.bytes_so_far ++ so_far_rest, expected_total)
 
 (* Visit all nodes from [start] up to and including [stop]. *)
 exception Stop_walk

@@ -8,12 +8,16 @@ open Support.Common
 
 module U = Support.Utils
 
-type progress = (Int64.t * Int64.t option * bool) Lwt_react.signal
+type progress = {
+  bytes_so_far : Int64.t;
+  total_expected : Int64.t option;
+  state : [`Active | `Finished]
+}
 
 type download = {
   cancel : unit -> unit Lwt.t;
   url : string;
-  progress : progress;    (* Must keep a reference to this; if it gets GC'd then updates stop. *)
+  progress : progress Lwt_react.signal;    (* Must keep a reference to this; if it gets GC'd then updates stop. *)
   hint : string option;
 }
 
@@ -25,8 +29,9 @@ type download_result =
 exception Unmodified
 
 let is_in_progress dl =
-  let (_, _, finished) = Lwt_react.S.value dl.progress in
-  not finished
+  match (Lwt_react.S.value dl.progress).state with
+  | `Active -> true
+  | `Finished -> false
 
 let init = lazy (
   Curl_threading.init ();
@@ -85,12 +90,12 @@ let download_no_follow ~cancelled ?size ?modification_time ?(start_offset=Int64.
       Curl_threading.run_in_main (fun () ->
         if !cancelled then true    (* Don't override the finished=true signal *)
         else (
-          let dlnow = Int64.of_float dlnow in
+          let bytes_so_far = Int64.of_float dlnow in
           begin match size with
-          | Some _ -> progress (dlnow, size, false)
+          | Some _ -> progress {bytes_so_far; total_expected = size; state = `Active}
           | None ->
-              let total = if dltotal = 0.0 then None else Some (Int64.of_float dltotal) in
-              progress (dlnow, total, false) end;
+              let total_expected = if dltotal = 0.0 then None else Some (Int64.of_float dltotal) in
+              progress {bytes_so_far; total_expected; state = `Active} end;
           false  (* (continue download) *)
         )
       )
@@ -251,7 +256,11 @@ let make_pool ~max_downloads_per_site : download_pool =
             let hint = hint |> pipe_some (fun feed -> Some (Feed_url.format_url feed)) in
             log_debug "Download URL '%s'... (for %s)" url (default "no feed" hint);
 
-            let progress, set_progress = Lwt_react.S.create (Int64.zero, size, false) in
+            let progress, set_progress = Lwt_react.S.create {
+              bytes_so_far = 0L;
+              total_expected = size;
+              state = `Active;
+            } in
 
             let cancelled = ref false in
 
@@ -315,8 +324,8 @@ let make_pool ~max_downloads_per_site : download_pool =
             try_lwt task
             with Lwt.Canceled -> `aborted_by_user |> Lwt.return
             finally
-              let (sofar, total, _) = Lwt_react.S.value progress in
-              set_progress (sofar, total, true);
+              let progress = Lwt_react.S.value progress in
+              set_progress {progress with state = `Finished};
               Lwt.return ()
       end
 

@@ -137,19 +137,19 @@ let rec get_total acc = function
 (** Install distribution packages. *)
 let install (ui:#ui) pk items =
   let packagekit_ids = items |> List.map (fun (_impl, rm) -> get_packagekit_id rm) in
-  let total_size = get_total Int64.zero items in
-  let finished, set_finished = Lwt_react.S.create false in
+  let total_expected = get_total Int64.zero items in
+  let state, set_state = Lwt_react.S.create `Active in
   try_lwt
     let cancelled = ref false in
     lwt () = pk#run_transaction [] (fun switch proxy ->
       lwt percentage = Dbus.OBus_property.monitor ~switch (Dbus.OBus_property.make ITrans.p_Percentage proxy) in
-      let progress = Lwt_react.S.l2 (fun perc finished ->
-        match total_size with
+      let progress = Lwt_react.S.l2 (fun perc state ->
+        match total_expected with
         | Some size when size <> Int64.zero ->
             let frac = min 1.0 @@ (Int32.to_float perc) /. 100. in
-            (Int64.of_float (frac *. (Int64.to_float size)), total_size, finished)
-        | _ -> (Int64.of_int32 perc, None, finished)
-      ) percentage finished in
+            {Downloader.bytes_so_far = Int64.of_float (frac *. (Int64.to_float size)); total_expected; state}
+        | _ -> {Downloader.bytes_so_far = Int64.of_int32 perc; total_expected = None; state}
+      ) percentage state in
       let cancel () =
         if not !cancelled then (
           cancelled := true;
@@ -183,7 +183,7 @@ let install (ui:#ui) pk items =
     ui#impl_added_to_store;
     Lwt.return (if !cancelled then `cancel else `ok)
   finally
-    set_finished true;
+    set_state `Finished;
     Lwt.return ()
 
 (** The top-level PackageKit service. *)
@@ -375,7 +375,7 @@ let packagekit = ref (fun config ->
       match_lwt Lazy.force proxy with
       | None -> Lwt.return ()
       | Some proxy ->
-          let progress, set_progress = Lwt_react.S.create (Int64.zero, None, false) in
+          let progress, set_progress = Lwt_react.S.create {Downloader.bytes_so_far = 0L; total_expected = None; state = `Active} in
           try_lwt
             let waiting_for = ref [] in
 
@@ -428,7 +428,7 @@ let packagekit = ref (fun config ->
               log_warning ~ex "Error querying PackageKit";
               Lwt.return ()
           finally
-            set_progress (Int64.zero, None, true); (* Stop progress indicator *)
+            set_progress {Downloader.bytes_so_far = 0L; total_expected = None; state = `Finished}; (* Stop progress indicator *)
             Lwt.return ()
 
     method install_packages (ui:#ui) items : [ `ok | `cancel ] Lwt.t =
