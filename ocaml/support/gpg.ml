@@ -71,32 +71,36 @@ let make_gpg_command system args =
   log_info "Running GnuPG: %s" (Logging.format_argv_for_logging argv);
   (List.hd opts, argv |> Array.of_list)
 
+let gpg_lock = Lwt_mutex.create ()
+
 (** Run gpg, passing [stdin] as input and collecting the output. *)
 let run_gpg_full system ?stdin args =
-  let command = make_gpg_command system args in
-  let child = new Lwt_process.process_full command in
-  try_lwt
-    (* Start collecting output... *)
-    let stdout = Lwt_io.read child#stdout in
-    let stderr = Lwt_io.read child#stderr in
+  Lwt_mutex.with_lock gpg_lock (fun () ->
+    let command = make_gpg_command system args in
+    let child = new Lwt_process.process_full command in
+    try_lwt
+      (* Start collecting output... *)
+      let stdout = Lwt_io.read child#stdout in
+      let stderr = Lwt_io.read child#stderr in
 
-    (* At the same time, write the input, if any *)
-    lwt () =
-      match stdin with
-      | None -> Lwt.return ()
-      | Some stdin -> stdin child#stdin in
+      (* At the same time, write the input, if any *)
+      lwt () =
+        match stdin with
+        | None -> Lwt.return ()
+        | Some stdin -> stdin child#stdin in
 
-    lwt () = Lwt_io.close child#stdin in
+      lwt () = Lwt_io.close child#stdin in
 
-    (* Join the collection threads *)
-    lwt stdout = stdout
-    and stderr = stderr in
-    lwt status = child#close in
-    Lwt.return (stdout, stderr, status)
-  with ex ->
-    (* child#terminate; - not in Debian *)
-    ignore child#close;
-    raise ex
+      (* Join the collection threads *)
+      lwt stdout = stdout
+      and stderr = stderr in
+      lwt status = child#close in
+      Lwt.return (stdout, stderr, status)
+    with ex ->
+      (* child#terminate; - not in Debian *)
+      ignore child#close;
+      raise ex
+  )
 
 (** Run gpg, passing [stdin] as input and collecting the output.
  * If the command returns an error, report stderr as the error (on success, stderr is discarded).
