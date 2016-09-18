@@ -11,7 +11,6 @@ install_on_osx () {
   sudo installer -verbose -pkg /Volumes/XQuartz-2.7.6/XQuartz.pkg -target /
   brew update &> /dev/null
   brew install gnupg2 gtk+ pygobject
-  export PKG_CONFIG_PATH=/usr/local/Library/Homebrew/os/mac/pkgconfig/10.9:/usr/lib/pkgconfig
 }
 
 case $TRAVIS_OS_NAME in
